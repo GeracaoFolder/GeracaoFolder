@@ -29,19 +29,24 @@ def _nome_arquivo(codigo: str) -> str:
 # O programa testa cada caminho em ordem e usa o primeiro que existir.
 # Prioridade: Windows → Linux. Fallback: fonte embutida do Pillow.
 # ──────────────────────────────────────────────────────────────────────────────
+_FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
 FONTS_BOLD_ITALIC = [
-    "C:/Windows/Fonts/arialbi.ttf",    # Arial Bold Italic  (Windows)
-    "C:/Windows/Fonts/calibriz.ttf",   # Calibri Bold Italic (Windows)
+    os.path.join(_FONTS_DIR, "arialbi.ttf"),                               # Projeto
+    "C:/Windows/Fonts/arialbi.ttf",                                        # Windows
+    "C:/Windows/Fonts/calibriz.ttf",                                       # Windows
     "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",  # Linux
 ]
 FONTS_BOLD = [
-    "C:/Windows/Fonts/arialbd.ttf",    # Arial Bold (Windows)
-    "C:/Windows/Fonts/calibrib.ttf",   # Calibri Bold (Windows)
+    os.path.join(_FONTS_DIR, "arialbd.ttf"),                               # Projeto
+    "C:/Windows/Fonts/arialbd.ttf",                                        # Windows
+    "C:/Windows/Fonts/calibrib.ttf",                                       # Windows
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",        # Linux
 ]
 FONTS_REGULAR = [
-    "C:/Windows/Fonts/arial.ttf",      # Arial Regular (Windows)
-    "C:/Windows/Fonts/calibri.ttf",    # Calibri Regular (Windows)
+    os.path.join(_FONTS_DIR, "arial.ttf"),                                 # Projeto
+    "C:/Windows/Fonts/arial.ttf",                                          # Windows
+    "C:/Windows/Fonts/calibri.ttf",                                        # Windows
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",     # Linux
 ]
 
