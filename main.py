@@ -35,11 +35,24 @@ def _cfg(chave: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _conexao_bd():
+    import platform
+    if platform.system() == "Windows":
+        import pyodbc
+        return pyodbc.connect(
+            "DRIVER={SQL Server};"
+            f"SERVER={_cfg('DB_SERVER')};"
+            f"DATABASE={_cfg('DB_DATABASE')};"
+            f"UID={_cfg('DB_USER')};"
+            f"PWD={_cfg('DB_PASSWORD')};"
+        )
     return pymssql.connect(
         server=_cfg("DB_SERVER"),
+        port=int(_cfg("DB_PORT") or 1433),
         user=_cfg("DB_USER"),
         password=_cfg("DB_PASSWORD"),
         database=_cfg("DB_DATABASE"),
+        login_timeout=5,
+        timeout=10,
     )
 
 
@@ -69,9 +82,9 @@ def buscar_produto(codigo_interno: str):
                     "descricao":      row[1] or "",
                     "imagem_marca":   row[2] or "",
                 }
-    except Exception as e:
-        st.sidebar.error(f"Erro ao consultar banco: {e}")
-    return None
+            return {}
+    except Exception:
+        return None
 
 
 _BASE_URL_IMAGENS = "https://www.grupodinatec.com.br/imagens"
@@ -708,18 +721,21 @@ with st.sidebar:
                                    placeholder="Ex: 80741")
 
     # Auto-preenchimento ao buscar no banco
-    _cod_pre     = ""
-    _nome_pre    = ""
+    _cod_pre      = ""
+    _nome_pre     = ""
     _imagem_marca = ""
-    _imagens     = []
+    _imagens      = []
     if codigo_interno.strip():
-        resultado = buscar_produto(codigo_interno.strip())
-        if resultado:
+        with st.spinner("Consultando banco..."):
+            resultado = buscar_produto(codigo_interno.strip())
+        if resultado is None:
+            st.warning("⚠️ Banco indisponível ou produto não encontrado. Preencha manualmente.")
+        elif resultado == {}:
+            st.warning("⚠️ Produto não encontrado.")
+        else:
             _cod_pre      = resultado["num_fabricante"]
             _nome_pre     = resultado["descricao"]
             _imagem_marca = resultado["imagem_marca"]
-        else:
-            st.sidebar.warning("⚠️ Produto não encontrado.")
 
         with st.spinner("Buscando imagens..."):
             _imagens = buscar_imagens_produto(codigo_interno.strip())
