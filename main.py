@@ -3,11 +3,10 @@
 ║          GERADOR DE CARD DE PROMOÇÃO — QUINELATO FREIOS                     ║
 ║                                                                              ║
 ║  Como usar:                                                                  ║
-║    1. Coloque base_promocao.png na mesma pasta deste arquivo                 ║
-║    2. Execute: python -m streamlit run main.py                               ║
-║    3. Edite os campos no painel lateral                                      ║
-║    4. (Opcional) Envie a foto do produto                                     ║
-║    5. Baixe o card em PNG ou JPG (300 dpi)                                   ║
+║    1. Execute: python -m streamlit run main.py                               ║
+║    2. Edite os campos no painel lateral                                      ║
+║    3. (Opcional) Envie a foto do produto                                     ║
+║    4. Baixe o card em PNG ou JPG (300 dpi)                                   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -50,12 +49,7 @@ FONTS_REGULAR = [
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",     # Linux
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CAMINHO DO TEMPLATE BASE
-# O arquivo base_promocao.png DEVE estar na mesma pasta que este script.
-# ──────────────────────────────────────────────────────────────────────────────
-_DIR         = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_BASE = os.path.join(_DIR, "base_promocao.png")
+_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,11 +251,11 @@ def gerar_card(badge, codigo, nome, veiculos,
                foto_produto=None,
                site="", telefone="", whatsapp=""):
     """
-    Gera o card de promoção a partir do template base_promocao.png.
+    Gera o card de promoção a partir de um canvas branco.
 
     Fluxo:
-        1. Abre o template (base_promocao.png)
-        2. Redesenha o badge (selo vermelho) com o texto informado
+        1. Cria canvas branco (913×915 px)
+        2. Desenha o badge (selo vermelho) com o texto informado
         3. Redesenha a barra de código + nome do produto
         4. (Se fornecida) Cola a foto do produto centralizada na área do meio
         5. Desenha "Veículos" e o valor logo abaixo da foto
@@ -290,11 +284,10 @@ def gerar_card(badge, codigo, nome, veiculos,
     COR_BRANCO   = (255, 255, 255)   # fundo das áreas limpas
     COR_TEXTO    = (0, 0, 0)   # cor principal do texto do card
 
-    # ── Passo 1 — Abrir o template e definir escala ───────────────────────────
-    # O template pode ter qualquer resolução; todas as coordenadas são calculadas
-    # proporcionalmente em relação à resolução de referência (913×915 px).
-    template  = Image.open(DEFAULT_BASE).convert("RGB")
-    W, H      = template.size   # dimensões reais do template
+    # ── Passo 1 — Criar canvas base e definir escala ─────────────────────────
+    # Dimensões de referência fixas: 913×915 px.
+    W, H      = 913, 915
+    template  = Image.new("RGB", (W, H), (255, 255, 255))
 
     # Fatores de escala: coordenada_real = coordenada_ref × fator
     fator_x = W / 913
@@ -305,14 +298,8 @@ def gerar_card(badge, codigo, nome, veiculos,
     def cy(valor): return int(valor * fator_y)   # escala vertical
     def cs(valor): return int(valor * fator_s)   # escala uniforme (fontes/raios)
 
-    # ── Passo 2 — Extrair o rodapé ANTES de qualquer modificação ─────────────
-    # O rodapé (barra marrom escura com logo Quinelato + "40 ANOS") começa
-    # aproximadamente em 91,3% da altura do template.
-    # Ele é salvo agora para ser reutilizado no canvas final,
-    # independentemente do que for desenhado sobre o template.
-    RODAPE_Y_INICIO = int(0.9531 * H)            # ≈ y=830 numa imagem de 909px
-    rodape_img      = template.crop((0, RODAPE_Y_INICIO, W, H))
-    RODAPE_ALTURA   = rodape_img.height          # altura em pixels do rodapé
+    # ── Passo 2 — Definir início do rodapé ───────────────────────────────────
+    RODAPE_Y_INICIO = int(0.9531 * H)            # ≈ y=872 numa imagem de 915px
 
     # ── Passo 3 — Trabalhar numa cópia do template ────────────────────────────
     canvas_base = template.copy()
@@ -565,17 +552,23 @@ st.markdown(
 
 # ── Painel lateral — campos editáveis e upload da foto ────────────────────────
 with st.sidebar:
+    def campo_obrigatorio(label, **kwargs):
+        valor = st.text_input(label + " *", **kwargs)
+        if not valor.strip():
+            st.caption("⚠️ Campo obrigatório")
+        return valor
+
     st.markdown("### ✏️ Textos do Card")
-    badge    = st.text_input("🏷️ Selo (badge vermelho)", value="")
-    codigo   = st.text_input("🔢 Código do produto",     value="")
-    nome     = st.text_input("📦 Nome do produto",       value="")
-    veiculos = st.text_input("🚛 Veículos compatíveis",  value="")
+    badge    = campo_obrigatorio("🏷️ Selo (badge vermelho)", value="")
+    codigo   = campo_obrigatorio("🔢 Código do produto",     value="")
+    nome     = campo_obrigatorio("📦 Nome do produto",       value="")
+    veiculos = campo_obrigatorio("🚛 Veículos compatíveis",  value="")
 
     st.markdown("---")
     st.markdown("### 🌐 Contatos da Empresa")
-    site      = st.text_input("🌍 Site",      value="", placeholder="www.dinatec.com.br")
-    telefone  = st.text_input("📞 Telefone",  value="", placeholder="(xx) xxxx-xxxx")
-    whatsapp  = st.text_input("💬 WhatsApp",  value="", placeholder="(xx) xxxxx-xxxx")
+    site      = campo_obrigatorio("🌍 Site",      value="", placeholder="www.dinatec.com.br")
+    telefone  = campo_obrigatorio("📞 Telefone",  value="", placeholder="(xx) xxxx-xxxx")
+    whatsapp  = campo_obrigatorio("💬 WhatsApp",  value="", placeholder="(xx) xxxxx-xxxx")
 
     st.markdown("---")
 
@@ -603,22 +596,20 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-# ── Verificar se o template base existe ───────────────────────────────────────
-if not os.path.exists(DEFAULT_BASE):
-    st.error(
-        f"⚠️ Template não encontrado: `{DEFAULT_BASE}`\n\n"
-        "Coloque o arquivo **base_promocao.png** na mesma pasta que **main.py**."
-    )
-    st.stop()
-
 # ── Gerar e exibir o card ─────────────────────────────────────────────────────
 col_preview, col_download = st.columns([3, 1], gap="large")
+
+faltando = [v for v in [badge, codigo, nome, veiculos, site, telefone, whatsapp]
+            if not v.strip()]
+
+if faltando:
+    st.stop()
 
 try:
     card = gerar_card(badge, codigo, nome, veiculos, foto_upload, site, telefone, whatsapp)
 
     with col_preview:
-        st.image(card, use_container_width=True,
+        st.image(card, width='stretch',
                  caption="Prévia — atualiza automaticamente ao editar os campos")
 
     with col_download:
