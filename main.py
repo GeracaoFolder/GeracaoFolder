@@ -15,6 +15,14 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import io
 import os
+import re
+
+
+def _nome_arquivo(codigo: str) -> str:
+    """Remove caracteres inválidos e retorna nome seguro para download."""
+    nome = re.sub(r"[^\w]", "_", codigo)
+    nome = re.sub(r"_+", "_", nome).strip("_")
+    return nome or "promo"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIGURAÇÃO DE FONTES
@@ -553,10 +561,10 @@ st.markdown(
 # ── Painel lateral — campos editáveis e upload da foto ────────────────────────
 with st.sidebar:
     st.markdown("### ✏️ Textos do Card")
-    badge    = st.text_input("🏷️ Selo (badge vermelho)", value="LANÇAMENTO")
-    codigo   = st.text_input("🔢 Código do produto",     value="QA-1077")
-    nome     = st.text_input("📦 Nome do produto",       value="JOGO DE REPARO VÁLVULA RELÊ")
-    veiculos = st.text_input("🚛 Veículos compatíveis",  value="DAF")
+    badge    = st.text_input("🏷️ Selo (badge vermelho)", value="")
+    codigo   = st.text_input("🔢 Código do produto",     value="")
+    nome     = st.text_input("📦 Nome do produto",       value="")
+    veiculos = st.text_input("🚛 Veículos compatíveis",  value="")
 
     st.markdown("---")
     st.markdown("### 🌐 Contatos da Empresa")
@@ -620,7 +628,7 @@ try:
         st.download_button(
             "Baixar (300 dpi)",
             data=buf_png,
-            file_name=f"promo_{codigo.replace('-','_').replace(' ','_')}.png",
+            file_name=f"promo_{_nome_arquivo(codigo)}.png",
             mime="image/png",
         )
 
@@ -632,7 +640,7 @@ try:
         st.download_button(
             "Baixar (300 dpi)",
             data=buf_jpg,
-            file_name=f"promo_{codigo.replace('-','_').replace(' ','_')}.jpg",
+            file_name=f"promo_{_nome_arquivo(codigo)}.jpg",
             mime="image/jpeg",
         )
 
