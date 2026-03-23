@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 import re
-import pymssql
+import mysql.connector
 import requests
 from dotenv import load_dotenv
 
@@ -31,60 +31,51 @@ def _cfg(chave: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# BANCO DE DADOS
+# BANCO DE DADOS — MySQL
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _conexao_bd():
-    import platform
-    if platform.system() == "Windows":
-        import pyodbc
-        return pyodbc.connect(
-            "DRIVER={SQL Server};"
-            f"SERVER={_cfg('DB_SERVER')};"
-            f"DATABASE={_cfg('DB_DATABASE')};"
-            f"UID={_cfg('DB_USER')};"
-            f"PWD={_cfg('DB_PASSWORD')};"
-        )
-    return pymssql.connect(
-        server=_cfg("DB_SERVER"),
-        port=int(_cfg("DB_PORT") or 1433),
-        user=_cfg("DB_USER"),
-        password=_cfg("DB_PASSWORD"),
-        database=_cfg("DB_DATABASE"),
-        login_timeout=5,
-        timeout=10,
-    )
-
 
 def buscar_produto(codigo_interno: str):
     """
-    Busca o produto pelo código interno.
-    Retorna dict com 'num_fabricante' e 'descricao', ou None se não encontrado.
+    Busca o produto pelo código interno no MySQL.
+    Retorna dict com os dados, {} se não encontrado, ou None em erro de conexão.
     """
     sql = """
         SELECT
-            P.NumFabricante,
-            UPPER(DP.Descricao),
-            M.Imagem
-        FROM Produtos P
-        LEFT JOIN Marcas M ON M.Codigo = P.CodMarca
-        LEFT JOIN DescricaoProduto DP ON DP.CodProduto = P.Codigo
-        WHERE P.Codigo = ?
+            CodExibirGrid,
+            DescricaoProdutoPT,
+            Marca
+        FROM ProdutosTraducao
+        WHERE Codigo = %s
     """
+    conn   = None
+    cursor = None
     try:
-        with _conexao_bd() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (int(codigo_interno),))
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "num_fabricante": row[0] or "",
-                    "descricao":      row[1] or "",
-                    "imagem_marca":   row[2] or "",
-                }
-            return {}
+        conn = mysql.connector.connect(
+            host=_cfg("DB_SERVER"),
+            port=int(_cfg("DB_PORT") or 3306),
+            user=_cfg("DB_USER"),
+            password=_cfg("DB_PASSWORD"),
+            database=_cfg("DB_DATABASE"),
+            connect_timeout=10,
+            connection_timeout=10,
+        )
+        cursor = conn.cursor()
+        cursor.execute(sql, (int(codigo_interno),))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "num_fabricante": row[0] or "",
+                "descricao":      row[1] or "",
+                "imagem_marca":   row[2] or "",
+            }
+        return {}
     except Exception:
         return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
 _BASE_URL_IMAGENS = "https://www.grupodinatec.com.br/imagens"
