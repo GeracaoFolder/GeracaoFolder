@@ -15,6 +15,84 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 import re
+import pyodbc
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _cfg(chave: str) -> str:
+    """Lê configuração: tenta st.secrets primeiro, depois variável de ambiente."""
+    try:
+        return st.secrets[chave]
+    except Exception:
+        return os.getenv(chave, "")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BANCO DE DADOS
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _conexao_bd():
+    return pyodbc.connect(
+        "DRIVER={SQL Server};"
+        f"SERVER={_cfg('DB_SERVER')};"
+        f"DATABASE={_cfg('DB_DATABASE')};"
+        f"UID={_cfg('DB_USER')};"
+        f"PWD={_cfg('DB_PASSWORD')};"
+    )
+
+
+def buscar_produto(codigo_interno: str):
+    """
+    Busca o produto pelo código interno.
+    Retorna dict com 'num_fabricante' e 'descricao', ou None se não encontrado.
+    """
+    sql = """
+        SELECT
+            P.NumFabricante,
+            UPPER(DP.Descricao),
+            M.Imagem
+        FROM Produtos P
+        LEFT JOIN Marcas M ON M.Codigo = P.CodMarca
+        LEFT JOIN DescricaoProduto DP ON DP.CodProduto = P.Codigo
+        WHERE P.Codigo = ?
+    """
+    try:
+        with _conexao_bd() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (int(codigo_interno),))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "num_fabricante": row[0] or "",
+                    "descricao":      row[1] or "",
+                    "imagem_marca":   row[2] or "",
+                }
+    except Exception as e:
+        st.sidebar.error(f"Erro ao consultar banco: {e}")
+    return None
+
+
+_BASE_URL_IMAGENS = "https://www.grupodinatec.com.br/imagens"
+
+
+def buscar_imagens_produto(codigo: str) -> list[dict]:
+    """
+    Tenta baixar as variantes _1 a _5 da imagem do produto.
+    Retorna lista de dicts com 'label' e 'bytes' para cada imagem encontrada.
+    """
+    encontradas = []
+    for i in range(1, 6):
+        url = f"{_BASE_URL_IMAGENS}/{codigo}_{i}.jpg"
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200 and resp.content:
+                encontradas.append({"label": f"Imagem {i}", "url": url, "bytes": resp.content})
+        except Exception:
+            continue
+    return encontradas
 
 
 def _nome_arquivo(codigo: str) -> str:
@@ -249,7 +327,8 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s):
 
 def gerar_card(badge, codigo, nome, veiculos,
                foto_produto=None,
-               site="", telefone="", whatsapp=""):
+               site="", telefone="", whatsapp="",
+               imagem_marca=""):
     """
     Gera o card de promoção a partir de um canvas branco.
 
@@ -421,6 +500,67 @@ def gerar_card(badge, codigo, nome, veiculos,
             fim_foto = AREA_Y1
 
     # ══════════════════════════════════════════════════════════════════════════
+    # ZONA 3b — TEXTO "IMAGEM ILUSTRATIVA" VERTICAL (margem direita)
+    # Sempre exibido, girado 90° anti-horário (para a esquerda).
+    # ══════════════════════════════════════════════════════════════════════════
+
+    fonte_ilustr = carregar_fonte(FONTS_BOLD, cs(22))
+    TEXTO_ILUSTR = "IMAGEM ILUSTRATIVA"
+
+    # Medir o texto
+    _tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    bb_i = _tmp_draw.textbbox((0, 0), TEXTO_ILUSTR, font=fonte_ilustr)
+    tw_i = bb_i[2] - bb_i[0]
+    th_i = bb_i[3] - bb_i[1]
+
+    # Criar canvas transparente com o texto horizontal
+    txt_img  = Image.new("RGBA", (tw_i + cs(6), th_i + cs(6)), (255, 255, 255, 0))
+    txt_draw = ImageDraw.Draw(txt_img)
+    txt_draw.text((-bb_i[0] + cs(3), -bb_i[1] + cs(3)),
+                  TEXTO_ILUSTR, font=fonte_ilustr, fill=(80, 80, 80, 255))
+
+    # Rotacionar 90° anti-horário (para a esquerda)
+    txt_rot = txt_img.rotate(90, expand=True)
+
+    # Posição: margem direita da área, centralizado verticalmente
+    rx = AREA_X1 - txt_rot.width - cs(6)
+    ry = AREA_Y0 + (AREA_Y1 - AREA_Y0 - txt_rot.height) // 2
+    ry = max(AREA_Y0, min(ry, AREA_Y1 - txt_rot.height))
+
+    _base_r = canvas_base.convert("RGBA")
+    _base_r.paste(txt_rot, (rx, ry), txt_rot)
+    canvas_base = _base_r.convert("RGB")
+    draw        = ImageDraw.Draw(canvas_base)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ZONA 3c — LOGO DA MARCA (abaixo do retângulo azul de código)
+    # Renderizado após a foto e limpeza da área, para não ser apagado.
+    # ══════════════════════════════════════════════════════════════════════════
+    if imagem_marca and imagem_marca.strip():
+        _nome_arq_marca = imagem_marca.strip()
+        _base_logos     = os.getenv("LOGOS_PATH", "")
+        _caminho_marca  = (_nome_arq_marca
+                           if os.path.exists(_nome_arq_marca)
+                           else os.path.join(_base_logos, _nome_arq_marca))
+        try:
+            if os.path.exists(_caminho_marca):
+                _logo_marca = Image.open(_caminho_marca).convert("RGBA")
+                MARCA_MAX_W = CAIXA_CODIGO[2] - CAIXA_CODIGO[0]
+                MARCA_MAX_H = cs(80)
+                _esc = min(MARCA_MAX_W / _logo_marca.width, MARCA_MAX_H / _logo_marca.height)
+                _lw  = max(1, int(_logo_marca.width  * _esc))
+                _lh  = max(1, int(_logo_marca.height * _esc))
+                _logo_marca = _logo_marca.resize((_lw, _lh), Image.LANCZOS)
+                _lx = CAIXA_CODIGO[0] + (MARCA_MAX_W - _lw) // 2
+                _ly = CAIXA_CODIGO[3] + cs(20)
+                _base_m = canvas_base.convert("RGBA")
+                _base_m.paste(_logo_marca, (_lx, _ly), _logo_marca)
+                canvas_base = _base_m.convert("RGB")
+                draw        = ImageDraw.Draw(canvas_base)
+        except Exception:
+            pass
+
+    # ══════════════════════════════════════════════════════════════════════════
     # ZONA 4 — VEÍCULOS COMPATÍVEIS
     # Posicionado dinamicamente: sempre logo abaixo do fim da foto.
     # Sem foto: usa a posição original do template.
@@ -559,9 +699,35 @@ with st.sidebar:
         return valor
 
     st.markdown("### ✏️ Textos do Card")
-    badge    = campo_obrigatorio("🏷️ Selo (badge vermelho)", value="")
-    codigo   = campo_obrigatorio("🔢 Código do produto",     value="")
-    nome     = campo_obrigatorio("📦 Nome do produto",       value="")
+    badge = st.selectbox("🏷️ Selo (badge vermelho) *",
+                         options=["", "LANÇAMENTO", "PROMOÇÃO", "QUEIMA DE ESTOQUE"])
+    if not badge:
+        st.caption("⚠️ Campo obrigatório")
+
+    st.markdown("---")
+    codigo_interno = st.text_input("🔍 Código Interno do Produto", value="",
+                                   placeholder="Ex: 80741")
+
+    # Auto-preenchimento ao buscar no banco
+    _cod_pre     = ""
+    _nome_pre    = ""
+    _imagem_marca = ""
+    _imagens     = []
+    if codigo_interno.strip():
+        resultado = buscar_produto(codigo_interno.strip())
+        if resultado:
+            _cod_pre      = resultado["num_fabricante"]
+            _nome_pre     = resultado["descricao"]
+            _imagem_marca = resultado["imagem_marca"]
+        else:
+            st.sidebar.warning("⚠️ Produto não encontrado.")
+
+        with st.spinner("Buscando imagens..."):
+            _imagens = buscar_imagens_produto(codigo_interno.strip())
+    st.markdown("---")
+
+    codigo   = campo_obrigatorio("🔢 Numero do Fabricante",     value=_cod_pre)
+    nome     = campo_obrigatorio("📦 Descrição do produto",       value=_nome_pre)
     veiculos = campo_obrigatorio("🚛 Veículos compatíveis",  value="")
 
     st.markdown("---")
@@ -571,18 +737,37 @@ with st.sidebar:
     whatsapp  = campo_obrigatorio("💬 WhatsApp",  value="", placeholder="(xx) xxxxx-xxxx")
 
     st.markdown("---")
-
-    # ⚠️ IMPORTANTE: Este uploader é APENAS para a foto do produto.
-    # O template do card (base_promocao.png) é carregado automaticamente.
     st.markdown("### 📦 Foto do Produto")
+
+    foto_upload  = None
+    _foto_bytes  = None
+
+    if _imagens:
+        opcoes = [img["label"] for img in _imagens]
+        escolha = st.selectbox("🖼️ Imagens encontradas no site", opcoes)
+        idx = opcoes.index(escolha)
+        _foto_bytes = _imagens[idx]["bytes"]
+        st.image(_imagens[idx]["url"], caption=escolha, width="content")
+    elif codigo_interno.strip():
+        st.warning(
+            "⚠️ Nenhuma imagem encontrada no site para este código.\n\n"
+            "Faça o carregamento manual abaixo."
+        )
+
     foto_upload = st.file_uploader(
-        "Envie a foto do produto (PNG ou JPG)",
+        "Envie a foto manualmente (PNG ou JPG)",
         type=["png", "jpg", "jpeg", "webp"],
         help=(
             "A foto será centralizada na área do meio do card.\n"
             "Melhor resultado: fundo branco ou transparente (PNG)."
         ),
     )
+
+    # Upload manual tem prioridade sobre a imagem do site
+    if foto_upload:
+        _foto_bytes = foto_upload.read()
+
+    foto_final = io.BytesIO(_foto_bytes) if _foto_bytes else None
 
     st.markdown("""
     <div style="background:#fff8ee;border:1px solid #d4b07a;border-radius:8px;
@@ -606,7 +791,8 @@ if faltando:
     st.stop()
 
 try:
-    card = gerar_card(badge, codigo, nome, veiculos, foto_upload, site, telefone, whatsapp)
+    card = gerar_card(badge, codigo, nome, veiculos, foto_final, site, telefone, whatsapp,
+                      imagem_marca=_imagem_marca)
 
     with col_preview:
         st.image(card, width='stretch',
