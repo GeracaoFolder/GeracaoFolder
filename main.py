@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 import re
-import pyodbc
+import pymssql
 import requests
 from dotenv import load_dotenv
 
@@ -35,12 +35,11 @@ def _cfg(chave: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _conexao_bd():
-    return pyodbc.connect(
-        "DRIVER={SQL Server};"
-        f"SERVER={_cfg('DB_SERVER')};"
-        f"DATABASE={_cfg('DB_DATABASE')};"
-        f"UID={_cfg('DB_USER')};"
-        f"PWD={_cfg('DB_PASSWORD')};"
+    return pymssql.connect(
+        server=_cfg("DB_SERVER"),
+        user=_cfg("DB_USER"),
+        password=_cfg("DB_PASSWORD"),
+        database=_cfg("DB_DATABASE"),
     )
 
 
@@ -538,7 +537,7 @@ def gerar_card(badge, codigo, nome, veiculos,
     # ══════════════════════════════════════════════════════════════════════════
     if imagem_marca and imagem_marca.strip():
         _nome_arq_marca = imagem_marca.strip()
-        _base_logos     = os.getenv("LOGOS_PATH", "")
+        _base_logos     = _cfg("LOGOS_PATH")
         _caminho_marca  = (_nome_arq_marca
                            if os.path.exists(_nome_arq_marca)
                            else os.path.join(_base_logos, _nome_arq_marca))
