@@ -17,6 +17,9 @@ import os
 import re
 import mysql.connector
 import requests
+import base64
+from google import genai as google_genai
+from google.genai import types as genai_types
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -57,19 +60,21 @@ def buscar_produto(codigo_interno: str):
             password=_cfg("DB_PASSWORD"),
             database=_cfg("DB_DATABASE"),
             connect_timeout=10,
-            connection_timeout=10,
+            use_pure=True,
+            auth_plugin="mysql_native_password",
         )
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
         cursor.execute(sql, (int(codigo_interno),))
         row = cursor.fetchone()
         if row:
             return {
-                "num_fabricante": row[0] or "",
-                "descricao":      row[1] or "",
-                "imagem_marca":   row[2] or "",
+                "num_fabricante": row.get("CodExibirGrid")      or "",
+                "descricao":      row.get("DescricaoProdutoPT") or "",
+                "imagem_marca":   row.get("Marca")              or "",
             }
         return {}
-    except Exception:
+    except Exception as e:
+        st.sidebar.error(f"Erro BD: {e}")
         return None
     finally:
         if cursor:
@@ -651,6 +656,222 @@ def gerar_card(badge, codigo, nome, veiculos,
 # INTERFACE STREAMLIT
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | None:
+    """
+    Envia a imagem para o Gemini para regeneração com qualidade profissional.
+    Retorna os bytes da imagem gerada, ou None em caso de erro.
+    """
+    try:
+        client = google_genai.Client(api_key=_cfg("GEMINI_API_KEY"))
+
+        resposta = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=[
+                genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
+                genai_types.Part(text=(
+                    "Regenerate this product image with the following requirements: "
+                    "pure white background, professional studio lighting, "
+                    "realistic soft shadow below the product, "
+                    "high detail and sharpness, product centered, "
+                    "photorealistic quality."
+                )),
+            ],
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+            ),
+        )
+
+        for part in resposta.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                return part.inline_data.data
+        return None
+    except Exception as e:
+        st.error(f"Erro Gemini: {e}")
+        return None
+
+
+def _redimensionar_e_comprimir(imagem_bytes: bytes,
+                                kb_alvo: int = 350,
+                                larg_max: int = 1800, alt_max: int = 1800,
+                                margem: int = 100) -> bytes:
+    """
+    Redimensiona a imagem para caber em larg_max×alt_max e centraliza num
+    canvas com margem em todos os lados. O canvas cresce conforme necessário.
+    """
+    img = Image.open(io.BytesIO(imagem_bytes)).convert("RGB")
+
+    # Calcula escala preservando proporção (amplia E reduz)
+    escala   = min(larg_max / img.width, alt_max / img.height)
+    novo_w   = max(1, int(img.width  * escala))
+    novo_h   = max(1, int(img.height * escala))
+    img      = img.resize((novo_w, novo_h), Image.LANCZOS)
+
+    canvas_w = img.width  + 2 * margem
+    canvas_h = img.height + 2 * margem
+    canvas   = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
+    canvas.paste(img, (margem, margem))
+
+    # Ajustar qualidade JPEG até atingir ≤ kb_alvo KB
+    for qualidade in range(92, 20, -2):
+        buf = io.BytesIO()
+        canvas.save(buf, format="JPEG", quality=qualidade, optimize=True)
+        if buf.tell() <= kb_alvo * 1024:
+            break
+
+    buf.seek(0)
+    return buf.read()
+
+
+@st.dialog("📤 Atualizar FTP", width="large")
+def dialog_atualizar_ftp(codigo: str):
+    import ftplib, io as _io
+
+    # flags de sessão
+    chave_enviado  = f"ftp_enviado_{codigo}"
+    chave_original = f"ftp_original_{codigo}"
+    chave_gemini   = f"ftp_gemini_{codigo}"
+    chave_final    = f"ftp_final_{codigo}"
+
+    for chave, padrao in [
+        (chave_enviado,  False),
+        (chave_original, None),
+        (chave_gemini,   None),
+        (chave_final,    None),
+    ]:
+        if chave not in st.session_state:
+            st.session_state[chave] = padrao
+
+    st.markdown(f"**Código:** `{codigo}`")
+    st.info(f"O arquivo será salvo como `{codigo}_1.jpg` no servidor.")
+
+    arquivo = st.file_uploader(
+        "Selecione a imagem (JPG ou PNG)",
+        type=["jpg", "jpeg", "png"],
+        key="ftp_upload",
+        disabled=st.session_state[chave_enviado],
+    )
+
+    # Ao selecionar novo arquivo, processa com Gemini e guarda em session_state
+    if arquivo and not st.session_state[chave_enviado]:
+        imagem_bytes = arquivo.getvalue()
+        mime_type    = arquivo.type or "image/jpeg"
+
+        if st.session_state[chave_original] != imagem_bytes:
+            st.session_state[chave_original] = imagem_bytes
+            with st.spinner("🤖 Processando com Gemini (realismo + sombra)..."):
+                resultado_gemini = _processar_imagem_gemini(imagem_bytes, mime_type)
+            st.session_state[chave_gemini] = resultado_gemini if resultado_gemini else imagem_bytes
+            if not resultado_gemini:
+                st.warning("Gemini não retornou imagem. Usando imagem original para redimensionamento.")
+            st.session_state[chave_final] = None  # força re-render do tamanho
+
+    imagem_final = st.session_state[chave_final]
+
+    if st.session_state[chave_gemini] and not st.session_state[chave_enviado]:
+        st.markdown("---")
+
+        # 300 DPI → 1 cm = 300/2.54 ≈ 118.11 px
+        PX_POR_CM = 300 / 2.54
+        MARGEM_PX = 100
+
+        st.markdown(
+            f"**⚙️ Ajuste de tamanho** — 300 DPI · "
+            f"margem automática de {round(MARGEM_PX/PX_POR_CM,1)} cm em cada lado"
+        )
+
+        col_w, col_h, col_btn = st.columns([2, 2, 1])
+        with col_w:
+            larg_cm = st.number_input(
+                "Largura (cm)", min_value=1.0,
+                value=15.2, step=0.1, format="%.1f", key="ftp_largura_cm",
+            )
+        with col_h:
+            alt_cm = st.number_input(
+                "Altura (cm)", min_value=1.0,
+                value=15.2, step=0.1, format="%.1f", key="ftp_altura_cm",
+            )
+        with col_btn:
+            st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+            atualizar = st.button("🔄 Aplicar", use_container_width=True)
+
+        # Converte cm → px (sem limite máximo)
+        larg_px = int(larg_cm * PX_POR_CM)
+        alt_px  = int(alt_cm  * PX_POR_CM)
+
+        canvas_w = larg_px + 2 * MARGEM_PX
+        canvas_h = alt_px  + 2 * MARGEM_PX
+        st.caption(
+            f"Canvas resultante: **{round(canvas_w/PX_POR_CM,1)} × {round(canvas_h/PX_POR_CM,1)} cm** "
+            f"({canvas_w} × {canvas_h} px)"
+        )
+
+        # Aplica automaticamente na primeira vez ou ao clicar Aplicar
+        if atualizar or imagem_final is None:
+            with st.spinner(f"📐 Redimensionando para {larg_cm:.1f}×{alt_cm:.1f} cm..."):
+                imagem_final = _redimensionar_e_comprimir(
+                    st.session_state[chave_gemini],
+                    kb_alvo=350,
+                    larg_max=larg_px,
+                    alt_max=alt_px,
+                    margem=MARGEM_PX,
+                )
+            st.session_state[chave_final] = imagem_final
+
+        col_orig, col_proc = st.columns(2)
+        with col_orig:
+            st.markdown("**Original**")
+            st.image(st.session_state[chave_original], width="stretch")
+        with col_proc:
+            st.markdown(
+                f"**Processada — {len(imagem_final)//1024} KB · "
+                f"{larg_cm:.1f}×{alt_cm:.1f} cm**"
+            )
+            st.image(imagem_final, width="stretch")
+
+    if st.session_state[chave_enviado]:
+        st.success(f"✅ Imagem já enviada ao FTP. Clique em Fechar para atualizar a página.")
+        if st.button("Fechar", use_container_width=True):
+            st.session_state[chave_enviado] = False
+            st.rerun()
+        return
+
+    col1, col2 = st.columns(2)
+    enviar   = col1.button("✅ Enviar",   use_container_width=True, disabled=imagem_final is None)
+    cancelar = col2.button("❌ Cancelar", use_container_width=True)
+
+    if cancelar:
+        st.rerun()
+
+    if enviar:
+        ftp_host     = _cfg("FTP_HOST")
+        ftp_port     = int(_cfg("FTP_PORT") or 21)
+        ftp_user     = _cfg("FTP_USER")
+        ftp_password = _cfg("FTP_PASSWORD")
+        ftp_pasta    = _cfg("FTP_PASTA") or "/imagens"
+        nome_arquivo = f"{codigo}_1.jpg"
+
+        if not ftp_host or not ftp_user:
+            st.error("Credenciais FTP não configuradas. Verifique as variáveis FTP_HOST, FTP_USER e FTP_PASSWORD.")
+        else:
+            try:
+                with st.spinner("📡 Conectando ao FTP e enviando..."):
+                    ftp = ftplib.FTP()
+                    ftp.connect(ftp_host, ftp_port, timeout=30)
+                    ftp.login(ftp_user, ftp_password)
+                    try:
+                        ftp.cwd(ftp_pasta)
+                    except ftplib.error_perm:
+                        ftp.mkd(ftp_pasta)
+                        ftp.cwd(ftp_pasta)
+                    # STOR sobrescreve — sem duplicata
+                    ftp.storbinary(f"STOR {nome_arquivo}", _io.BytesIO(imagem_final))
+                    ftp.quit()
+                st.session_state[chave_enviado] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro FTP: {e}")
+
+
 st.set_page_config(
     page_title="Gerador de Promoção — Dinatec",
     page_icon="🔧",
@@ -759,6 +980,8 @@ with st.sidebar:
             "⚠️ Nenhuma imagem encontrada no site para este código.\n\n"
             "Faça o carregamento manual abaixo."
         )
+        if st.button("📤 Atualizar FTP", use_container_width=True):
+            dialog_atualizar_ftp(codigo_interno.strip())
 
     foto_upload = st.file_uploader(
         "Envie a foto manualmente (PNG ou JPG)",
