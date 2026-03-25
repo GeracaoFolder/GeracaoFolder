@@ -83,6 +83,107 @@ def buscar_produto(codigo_interno: str):
             conn.close()
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# BANCO DE DADOS — MARCAS
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _conn_bd():
+    """Abre e retorna uma conexão MySQL."""
+    return mysql.connector.connect(
+        host=_cfg("DB_SERVER"),
+        port=int(_cfg("DB_PORT") or 3306),
+        user=_cfg("DB_USER"),
+        password=_cfg("DB_PASSWORD"),
+        database=_cfg("DB_DATABASE"),
+        connect_timeout=10,
+        use_pure=True,
+        auth_plugin="mysql_native_password",
+    )
+
+
+_SQL_CRIAR_MARCAS = """
+    CREATE TABLE IF NOT EXISTS Marcas (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        nome          VARCHAR(191) NOT NULL UNIQUE,
+        logo_dados    LONGBLOB,
+        logo_mime     VARCHAR(100) DEFAULT 'image/png',
+        criado_em     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                      ON UPDATE CURRENT_TIMESTAMP
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+"""
+
+
+def buscar_marca(nome_marca: str):
+    """
+    Busca uma marca pelo nome exato na tabela Marcas.
+    Cria a tabela automaticamente se ainda não existir.
+    Retorna dict com id/nome/logo_dados/logo_mime, {} se não encontrada,
+    ou None em caso de erro de conexão.
+    """
+    conn = cursor = None
+    try:
+        conn = _conn_bd()
+        cursor = conn.cursor(dictionary=True)
+        # Garante que a tabela existe antes de consultar
+        cursor.execute(_SQL_CRIAR_MARCAS)
+        conn.commit()
+        cursor.execute(
+            "SELECT id, nome, logo_dados, logo_mime FROM Marcas WHERE nome = %s",
+            (nome_marca,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id":         row["id"],
+                "nome":       row["nome"],
+                "logo_dados": row.get("logo_dados"),
+                "logo_mime":  row.get("logo_mime") or "image/png",
+            }
+        return {}
+    except Exception as e:
+        st.sidebar.error(f"Erro BD (marcas): {e}")
+        return None
+    finally:
+        if cursor: cursor.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+def cadastrar_marca(nome: str, logo_dados: bytes, logo_mime: str = "image/png") -> bool:
+    """
+    Cadastra ou atualiza uma marca na tabela Marcas.
+    Cria a tabela automaticamente se ainda não existir.
+    Usa INSERT … ON DUPLICATE KEY UPDATE para não gerar duplicatas.
+    Retorna True se bem-sucedido.
+    """
+    conn = cursor = None
+    try:
+        conn = _conn_bd()
+        cursor = conn.cursor()
+        # Garante que a tabela existe antes de inserir
+        cursor.execute(_SQL_CRIAR_MARCAS)
+        conn.commit()
+        cursor.execute(
+            """
+            INSERT INTO Marcas (nome, logo_dados, logo_mime)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                logo_dados    = VALUES(logo_dados),
+                logo_mime     = VALUES(logo_mime),
+                atualizado_em = CURRENT_TIMESTAMP
+            """,
+            (nome, logo_dados, logo_mime),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar marca: {e}")
+        return False
+    finally:
+        if cursor: cursor.close()
+        if conn and conn.is_connected(): conn.close()
+
+
 _BASE_URL_IMAGENS = "https://www.grupodinatec.com.br/imagens"
 
 
@@ -185,6 +286,30 @@ def retangulo_arredondado(draw, xy, raio, cor):
             draw.ellipse([cx, cy, cx + 2 * raio, cy + 2 * raio], fill=cor)
 
 
+def remover_fundo_branco(img: Image.Image, tolerancia: int = 25) -> Image.Image:
+    """
+    Torna transparentes os pixels brancos/quase-brancos de uma imagem RGBA.
+
+    Parâmetros:
+        img        : PIL.Image — imagem de entrada (qualquer modo)
+        tolerancia : int — quanto cada canal R/G/B pode se afastar de 255
+                     e ainda ser considerado "branco" (padrão 25)
+
+    Retorna:
+        PIL.Image em modo RGBA com o fundo removido.
+    """
+    img  = img.convert("RGBA")
+    px   = img.load()
+    w, h = img.size
+    lim  = 255 - tolerancia
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if r >= lim and g >= lim and b >= lim:
+                px[x, y] = (r, g, b, 0)
+    return img
+
+
 def centralizar_texto(draw, texto, fonte, caixa, cor):
     """
     Desenha um texto centralizado (horizontal e verticalmente) dentro de
@@ -206,6 +331,30 @@ def centralizar_texto(draw, texto, fonte, caixa, cor):
          y0 + (y1 - y0 - th) // 2 - bb[1]),
         texto, font=fonte, fill=cor
     )
+
+
+def quebrar_linhas(draw, texto, fonte, largura_max):
+    """
+    Quebra o texto em linhas que cabem dentro de largura_max pixels.
+    Respeita espaços como pontos de quebra.
+
+    Retorna lista de strings (uma por linha).
+    """
+    palavras    = texto.split()
+    linhas      = []
+    linha_atual = ""
+    for palavra in palavras:
+        teste = (linha_atual + " " + palavra).strip()
+        bb    = draw.textbbox((0, 0), teste, font=fonte)
+        if bb[2] - bb[0] <= largura_max:
+            linha_atual = teste
+        else:
+            if linha_atual:
+                linhas.append(linha_atual)
+            linha_atual = palavra
+    if linha_atual:
+        linhas.append(linha_atual)
+    return linhas or [texto]
 
 
 def fonte_auto_tamanho(draw, texto, candidatos, largura_max, tam_inicial, tam_min=10):
@@ -336,7 +485,8 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s):
 def gerar_card(badge, codigo, nome, veiculos,
                foto_produto=None,
                site="", telefone="", whatsapp="",
-               imagem_marca=""):
+               imagem_marca="",
+               marca_logo_bytes: bytes | None = None):
     """
     Gera o card de promoção a partir de um canvas branco.
 
@@ -435,17 +585,14 @@ def gerar_card(badge, codigo, nome, veiculos,
     CAIXA_NOME = [CAIXA_CODIGO[2] + 1, CAIXA_CODIGO[1], W - cx(7), CAIXA_CODIGO[3]]
     draw.rectangle(CAIXA_NOME, fill=COR_BRANCO)
 
-    # Texto do nome — bold marrom, auto-ajusta tamanho, alinhado à esquerda
-    largura_nome = CAIXA_NOME[2] - CAIXA_NOME[0] - cs(36)
-    fonte_nome   = fonte_auto_tamanho(draw, nome, FONTS_BOLD,
-                                      largura_nome, tam_inicial=cs(30))
-    bb_nome = draw.textbbox((0, 0), nome, font=fonte_nome)
-    # Centralizar verticalmente dentro da caixa, com margem à esquerda
-    y_nome  = (CAIXA_NOME[1]
-               + (CAIXA_NOME[3] - CAIXA_NOME[1] - (bb_nome[3] - bb_nome[1])) // 2
-               - bb_nome[1])
-    draw.text((CAIXA_NOME[0] + cs(18), y_nome), nome,
-              font=fonte_nome, fill=COR_TEXTO)
+    # Pré-calcular layout do nome (será desenhado acima da foto na área principal)
+    _NOME_FONTE  = carregar_fonte(FONTS_BOLD, cs(26))
+    _NOME_LARG   = W - cx(40)
+    _NOME_SP     = cs(6)
+    _NOME_LINHAS = quebrar_linhas(draw, nome, _NOME_FONTE, _NOME_LARG)
+    _NOME_LH     = draw.textbbox((0, 0), "Ag", font=_NOME_FONTE)[3]
+    _NOME_H      = len(_NOME_LINHAS) * _NOME_LH + (len(_NOME_LINHAS) - 1) * _NOME_SP
+    _NOME_PAD    = cs(14)   # margem acima e abaixo do texto
 
     # ══════════════════════════════════════════════════════════════════════════
     # ZONA 3 — ÁREA DO PRODUTO (foto central)
@@ -493,8 +640,30 @@ def gerar_card(badge, codigo, nome, veiculos,
             foto_ok  = True
 
             # Limpar toda a faixa da área de produto até o início do rodapé
-            # (apaga as fotos originais das peças e o espaço de veículos)
             draw.rectangle([0, AREA_Y0, W, RODAPE_Y_INICIO], fill=COR_BRANCO)
+
+            # ── Desenhar nome acima da foto ───────────────────────────────────
+            _ny = AREA_Y0 + _NOME_PAD
+            for _linha in _NOME_LINHAS:
+                _bb = draw.textbbox((0, 0), _linha, font=_NOME_FONTE)
+                _lw = _bb[2] - _bb[0]
+                _nx = AREA_X0 + (AREA_W - _lw) // 2
+                draw.text((_nx, _ny - _bb[1]), _linha, font=_NOME_FONTE, fill=COR_TEXTO)
+                _ny += _NOME_LH + _NOME_SP
+            _NOME_FIM = AREA_Y0 + _NOME_PAD + _NOME_H + _NOME_PAD
+
+            # Reposicionar foto para abaixo do bloco de nome
+            _FOTO_H_DISP = max(1, AREA_Y1 - _NOME_FIM - cs(20))
+            _FOTO_W_DISP = max(1, AREA_W - 2 * cs(60))
+            _esc2    = min(_FOTO_W_DISP / img_prod.width, _FOTO_H_DISP / img_prod.height)
+            novo_w   = max(1, int(img_prod.width  * _esc2))
+            novo_h   = max(1, int(img_prod.height * _esc2))
+            img_prod = img_prod.resize((novo_w, novo_h), Image.LANCZOS)
+            col_x    = AREA_X0 + (AREA_W - novo_w) // 2
+            col_y    = _NOME_FIM + (_FOTO_H_DISP - novo_h) // 2
+            col_x    = max(AREA_X0, min(col_x, AREA_X1 - novo_w))
+            col_y    = max(_NOME_FIM, min(col_y, AREA_Y1 - novo_h))
+            fim_foto = col_y + novo_h
 
             # Colar a foto preservando transparência (alpha channel)
             base_rgba = canvas_base.convert("RGBA")
@@ -506,6 +675,18 @@ def gerar_card(badge, codigo, nome, veiculos,
             # Se falhar, mantém a área original do template (sem foto)
             foto_ok  = False
             fim_foto = AREA_Y1
+
+    # Sem foto: desenhar nome no topo da área de produto
+    if not foto_ok:
+        draw.rectangle([AREA_X0, AREA_Y0, AREA_X1,
+                        AREA_Y0 + _NOME_PAD + _NOME_H + _NOME_PAD], fill=COR_BRANCO)
+        _ny = AREA_Y0 + _NOME_PAD
+        for _linha in _NOME_LINHAS:
+            _bb = draw.textbbox((0, 0), _linha, font=_NOME_FONTE)
+            _lw = _bb[2] - _bb[0]
+            _nx = AREA_X0 + (AREA_W - _lw) // 2
+            draw.text((_nx, _ny - _bb[1]), _linha, font=_NOME_FONTE, fill=COR_TEXTO)
+            _ny += _NOME_LH + _NOME_SP
 
     # ══════════════════════════════════════════════════════════════════════════
     # ZONA 3b — TEXTO "IMAGEM ILUSTRATIVA" VERTICAL (margem direita)
@@ -542,9 +723,17 @@ def gerar_card(badge, codigo, nome, veiculos,
 
     # ══════════════════════════════════════════════════════════════════════════
     # ZONA 3c — LOGO DA MARCA (abaixo do retângulo azul de código)
+    # Prioridade: marca_logo_bytes (BD Marcas) > imagem_marca (arquivo/legado)
     # Renderizado após a foto e limpeza da área, para não ser apagado.
     # ══════════════════════════════════════════════════════════════════════════
-    if imagem_marca and imagem_marca.strip():
+    _logo_marca_img = None
+
+    if marca_logo_bytes is not None:
+        try:
+            _logo_marca_img = Image.open(io.BytesIO(marca_logo_bytes)).convert("RGBA")
+        except Exception:
+            pass
+    elif imagem_marca and imagem_marca.strip():
         _nome_arq_marca = imagem_marca.strip()
         _base_logos     = _cfg("LOGOS_PATH")
         _caminho_marca  = (_nome_arq_marca
@@ -552,19 +741,26 @@ def gerar_card(badge, codigo, nome, veiculos,
                            else os.path.join(_base_logos, _nome_arq_marca))
         try:
             if os.path.exists(_caminho_marca):
-                _logo_marca = Image.open(_caminho_marca).convert("RGBA")
-                MARCA_MAX_W = CAIXA_CODIGO[2] - CAIXA_CODIGO[0]
-                MARCA_MAX_H = cs(80)
-                _esc = min(MARCA_MAX_W / _logo_marca.width, MARCA_MAX_H / _logo_marca.height)
-                _lw  = max(1, int(_logo_marca.width  * _esc))
-                _lh  = max(1, int(_logo_marca.height * _esc))
-                _logo_marca = _logo_marca.resize((_lw, _lh), Image.LANCZOS)
-                _lx = CAIXA_CODIGO[0] + (MARCA_MAX_W - _lw) // 2
-                _ly = CAIXA_CODIGO[3] + cs(20)
-                _base_m = canvas_base.convert("RGBA")
-                _base_m.paste(_logo_marca, (_lx, _ly), _logo_marca)
-                canvas_base = _base_m.convert("RGB")
-                draw        = ImageDraw.Draw(canvas_base)
+                _logo_marca_img = Image.open(_caminho_marca).convert("RGBA")
+        except Exception:
+            pass
+
+    if _logo_marca_img is not None:
+        try:
+            # Remove fundo branco/quase-branco para não bloquear a foto do produto
+            _logo_marca_img = remover_fundo_branco(_logo_marca_img)
+            MARCA_MAX_W = cx(300)
+            MARCA_MAX_H = cs(300)
+            _esc = min(MARCA_MAX_W / _logo_marca_img.width, MARCA_MAX_H / _logo_marca_img.height)
+            _lw  = max(1, int(_logo_marca_img.width  * _esc))
+            _lh  = max(1, int(_logo_marca_img.height * _esc))
+            _logo_marca_img = _logo_marca_img.resize((_lw, _lh), Image.LANCZOS)
+            _lx = CAIXA_CODIGO[0] - cs(-580)
+            _ly = CAIXA_CODIGO[3] - cs(228)
+            _base_m = canvas_base.convert("RGBA")
+            _base_m.paste(_logo_marca_img, (_lx, _ly), _logo_marca_img)
+            canvas_base = _base_m.convert("RGB")
+            draw        = ImageDraw.Draw(canvas_base)
         except Exception:
             pass
 
@@ -687,6 +883,38 @@ def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | Non
         return None
     except Exception as e:
         st.error(f"Erro Gemini: {e}")
+        return None
+
+
+def _melhorar_logo_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | None:
+    """
+    Envia a logo para o Gemini para melhorar qualidade e remover o fundo.
+    Retorna os bytes da imagem processada, ou None em caso de erro.
+    """
+    try:
+        client = google_genai.Client(api_key=_cfg("GEMINI_API_KEY"))
+        resposta = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=[
+                genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
+                genai_types.Part(text=(
+                    "This is a brand logo image. Please improve it with these requirements: "
+                    "remove the background completely making it pure white (#FFFFFF), "
+                    "sharpen and clean all edges, improve overall quality and resolution, "
+                    "keep exactly the same design, colors, shapes and text as the original logo. "
+                    "Output a professional high-quality version of this exact same logo."
+                )),
+            ],
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+            ),
+        )
+        for part in resposta.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                return part.inline_data.data
+        return None
+    except Exception as e:
+        st.error(f"Erro Gemini (logo): {e}")
         return None
 
 
@@ -872,6 +1100,98 @@ def dialog_atualizar_ftp(codigo: str):
                 st.error(f"Erro FTP: {e}")
 
 
+@st.dialog("➕ Cadastrar Marca", width="large")
+def dialog_cadastrar_marca(nome_marca: str):
+    """
+    Dialog para cadastrar uma nova marca com logo melhorada pelo Gemini.
+
+    Fluxo:
+        1. Usuário faz upload da logo
+        2. Gemini processa: remove fundo + melhora qualidade
+        3. Exibe comparação original × melhorada
+        4. Botão Salvar grava no banco (tabela Marcas)
+    """
+    chave_orig  = f"mrc_orig_{nome_marca}"
+    chave_gem   = f"mrc_gem_{nome_marca}"
+    chave_salvo = f"mrc_salvo_{nome_marca}"
+
+    for chave, padrao in [
+        (chave_orig,  None),
+        (chave_gem,   None),
+        (chave_salvo, False),
+    ]:
+        if chave not in st.session_state:
+            st.session_state[chave] = padrao
+
+    # ── Tela de confirmação pós-salvamento ─────────────────────────────────
+    if st.session_state[chave_salvo]:
+        st.success(f"✅ Marca **{nome_marca}** cadastrada com sucesso!")
+        if st.button("Fechar", use_container_width=True):
+            st.session_state[chave_salvo] = False
+            st.rerun()
+        return
+
+    st.markdown(f"**Marca:** `{nome_marca}`")
+    st.info(
+        "Faça o upload da logo abaixo. "
+        "O Gemini irá remover o fundo e melhorar a qualidade automaticamente."
+    )
+
+    arquivo = st.file_uploader(
+        "Selecione a logo (JPG, PNG ou WebP)",
+        type=["jpg", "jpeg", "png", "webp"],
+        key=f"mrc_upload_{nome_marca}",
+    )
+
+    # ── Processar novo arquivo com Gemini ──────────────────────────────────
+    if arquivo:
+        imagem_bytes = arquivo.getvalue()
+        mime_type    = arquivo.type or "image/png"
+
+        if st.session_state[chave_orig] != imagem_bytes:
+            st.session_state[chave_orig] = imagem_bytes
+            st.session_state[chave_gem]  = None
+            with st.spinner("🤖 Melhorando logo com Gemini (fundo branco + qualidade)..."):
+                resultado = _melhorar_logo_gemini(imagem_bytes, mime_type)
+            if resultado:
+                st.session_state[chave_gem] = resultado
+            else:
+                st.warning("Gemini não retornou imagem. Será usada a imagem original.")
+                st.session_state[chave_gem] = imagem_bytes
+
+    # ── Exibir prévia e botões ─────────────────────────────────────────────
+    if st.session_state[chave_gem]:
+        col_orig, col_proc = st.columns(2)
+        with col_orig:
+            st.markdown("**Original**")
+            st.image(st.session_state[chave_orig], use_container_width=True)
+        with col_proc:
+            st.markdown("**Melhorada pelo Gemini**")
+            st.image(st.session_state[chave_gem], use_container_width=True)
+
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        salvar   = col1.button("💾 Salvar Marca", use_container_width=True)
+        cancelar = col2.button("❌ Cancelar",     use_container_width=True)
+
+        if cancelar:
+            st.rerun()
+
+        if salvar:
+            with st.spinner("Salvando no banco de dados..."):
+                ok = cadastrar_marca(
+                    nome=nome_marca,
+                    logo_dados=st.session_state[chave_gem],
+                    logo_mime="image/png",
+                )
+            if ok:
+                st.session_state[chave_salvo] = True
+                st.rerun()
+    else:
+        if st.button("❌ Cancelar", use_container_width=True):
+            st.rerun()
+
+
 st.set_page_config(
     page_title="Gerador de Promoção — Dinatec",
     page_icon="🔧",
@@ -899,12 +1219,19 @@ section[data-testid="stSidebar"] label {
 }
 
 div[data-testid="stDownloadButton"] > button {
-    background: #3b1f00; color: white; font-weight: 700;
-    border: none; border-radius: 8px; padding: 11px 0;
-    width: 100%; font-size: .9rem; margin-top: 6px;
-    transition: background .2s;
+    background: linear-gradient(135deg, #2d1a00, #3b1f00);
+    color: white; font-weight: 700;
+    border: none; border-radius: 10px;
+    padding: 13px 0; width: 100%;
+    font-size: .95rem; letter-spacing: .4px;
+    box-shadow: 0 3px 8px rgba(0,0,0,.25);
+    transition: all .2s ease;
 }
-div[data-testid="stDownloadButton"] > button:hover { background: #5a3200; }
+div[data-testid="stDownloadButton"] > button:hover {
+    background: linear-gradient(135deg, #5a3200, #7a4500);
+    box-shadow: 0 5px 14px rgba(0,0,0,.35);
+    transform: translateY(-1px);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -956,6 +1283,40 @@ with st.sidebar:
     codigo   = campo_obrigatorio("🔢 Numero do Fabricante",     value=_cod_pre)
     nome     = campo_obrigatorio("📦 Descrição do produto",       value=_nome_pre)
     veiculos = campo_obrigatorio("🚛 Veículos compatíveis",  value="")
+
+    # ── Campo Marca do Produto ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏭 Marca do Produto")
+
+    nome_marca_input = st.text_input(
+        "🏷️ Marca do Produto",
+        value="",
+        placeholder="Ex: Mercedes-Benz, Volvo, Scania…",
+        key="campo_marca",
+    )
+
+    _marca_logo_bytes: bytes | None = None
+
+    if nome_marca_input.strip():
+        with st.spinner("Buscando marca no banco..."):
+            _resultado_marca = buscar_marca(nome_marca_input.strip())
+
+        if _resultado_marca is None:
+            st.warning("⚠️ Banco indisponível. Verifique a conexão.")
+        elif _resultado_marca == {}:
+            st.warning(f"⚠️ Marca **{nome_marca_input.strip()}** não cadastrada.")
+            if st.button("➕ Cadastrar Marca", use_container_width=True, key="btn_cadastrar_marca"):
+                dialog_cadastrar_marca(nome_marca_input.strip())
+        else:
+            st.success(f"✅ Marca **{_resultado_marca['nome']}** encontrada!")
+            _marca_logo_bytes = _resultado_marca.get("logo_dados")
+            if _marca_logo_bytes:
+                st.image(
+                    _marca_logo_bytes,
+                    caption="Logo da marca",
+                    use_container_width=False,
+                    width=160,
+                )
 
     st.markdown("---")
     st.markdown("### 🌐 Contatos da Empresa")
@@ -1021,40 +1382,69 @@ if faltando:
 
 try:
     card = gerar_card(badge, codigo, nome, veiculos, foto_final, site, telefone, whatsapp,
-                      imagem_marca=_imagem_marca)
+                      imagem_marca=_imagem_marca,
+                      marca_logo_bytes=_marca_logo_bytes)
 
     with col_preview:
         st.image(card, width='stretch',
                  caption="Prévia — atualiza automaticamente ao editar os campos")
 
     with col_download:
-        st.markdown("### 💾 Exportar")
-
-        # Botão PNG (sem perda de qualidade)
+        # Gerar buffers
         buf_png = io.BytesIO()
-        card.save(buf_png, format="PNG", dpi=(300, 300))
+        card.save(buf_png, format="PNG", dpi=(600, 600))
         buf_png.seek(0)
-        st.markdown("#### FORMATO PNG")
-        
+        kb_png = len(buf_png.getvalue()) // 1024
+
+        buf_jpg = io.BytesIO()
+        card.convert("RGB").save(buf_jpg, format="JPEG", quality=100, dpi=(600, 600))
+        buf_jpg.seek(0)
+        kb_jpg = len(buf_jpg.getvalue()) // 1024
+
+        st.markdown(f"""
+        <div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+                    border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="color:#f5c87a;font-size:.8rem;font-weight:700;
+                      text-transform:uppercase;letter-spacing:.8px;">
+            PNG — Sem perda
+          </div>
+          <div style="color:#ccc;font-size:.75rem;margin-top:2px;">
+            {card.width}×{card.height} px &nbsp;·&nbsp; {kb_png} KB
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.download_button(
-            "Baixar (300 dpi)",
+            "⬇ Baixar PNG",
             data=buf_png,
             file_name=f"promo_{_nome_arquivo(codigo)}.png",
             mime="image/png",
+            use_container_width=True,
+            key="dl_png",
         )
 
-        # Botão JPG (menor tamanho de arquivo, qualidade 95%)
-        buf_jpg = io.BytesIO()
-        card.convert("RGB").save(buf_jpg, format="JPEG", quality=100, dpi=(300, 300))
-        buf_jpg.seek(0)
-        st.markdown("#### FORMATO JPG")        
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+                    border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="color:#f5c87a;font-size:.8rem;font-weight:700;
+                      text-transform:uppercase;letter-spacing:.8px;">
+            JPG — Comprimido
+          </div>
+          <div style="color:#ccc;font-size:.75rem;margin-top:2px;">
+            {card.width}×{card.height} px &nbsp;·&nbsp; {kb_jpg} KB
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.download_button(
-            "Baixar (300 dpi)",
+            "⬇ Baixar JPG",
             data=buf_jpg,
             file_name=f"promo_{_nome_arquivo(codigo)}.jpg",
             mime="image/jpeg",
+            use_container_width=True,
+            key="dl_jpg",
         )
 
 except Exception as erro:
-    with col_preview:
+    with col_preview: 
         st.error(f"Erro ao gerar o card:\n\n`{erro}`")
