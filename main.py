@@ -1387,41 +1387,41 @@ _EMPRESAS = {
         "endereco": "Av. Luiz Maggioni, 1585 - Dist. Industrial Pref. Luiz Roberto Jabali\nRibeirão Preto - SP - CEP 14072-055",
         "site":     "www.dinatec.com.br",
         "telefone": "(16) 2111 - 9100",
-        "whatsapp": "(16) 99731 - 7999",
+        "Whatsapp": "(16) 99631 - 7999",
     },
     "Filial - Araraquara": {
         "endereco": "Av. Pres. Vargas, 2644 - Jardim Quitandinha, Araraquara - SP, 14801-018",
         "site": "www.dinatec.com.br", 
         "telefone": "(16) 3301 - 0110", 
-        "whatsapp": "(16) 99731 - 7999",
+        "Whatsapp": "(16) 99631 - 7999",
     },
     "Filial - São José do Rio Preto": {
         "endereco": "R. Dr. Coutinho Cavalcante, 1310 - Jardim America, São José do Rio Preto - SP, 15055-300", 
         "site": "www.dinatec.com.br", 
         "telefone": "(17) 2138 - 1892", 
-        "whatsapp": "(16) 99731 - 7999",
+        "Whatsapp": "(16) 99631 - 7999",
     },
     "Filial - Limeira": {
         "endereco": "R. Doná Geni Vargas Machado Gomes, 375 - Jardim Residencial, Limeira - SP, 13485-213", 
         "site": "www.dinatec.com.br", 
         "telefone": "(19) 3444 - 2001", 
-        "whatsapp": "(16) 99731 - 7999",
+        "Whatsapp": "(16) 99631 - 7999",
     },
     "Filial - Itumbiara": {
         "endereco": "Av. Dr. Celso Maeda, 2850 - A - Jardim Liberdade, Itumbiara - GO, 75515-255", 
         "site": "www.dinatec.com.br", 
-        "telefone": "(64) ", 
-        "whatsapp": "(16) 99731 - 7999",
+        "telefone": "(64) 3048 - 2816", 
+        "Whatsapp": "(16) 99631 - 7999",
     },
     "Filial - Brasília": {
         "endereco": "St. G Sul Q CS CSG 5 - Taguatinga, Brasília - DF, 72035-505", 
         "site": "www.dinatec.com.br", 
-        "telefone": "(61) 3356 - 0110", 
-        "whatsapp": "(16) 99731 - 7999",
+        "telefone": "(61) 3356 - 0046", 
+        "Whatsapp": "(16) 99631 - 7999",
     },
 }
 
-st.markdown('<div class="titulo">🔧 Gerador de Promoção</div>', unsafe_allow_html=True)
+st.markdown('<div class="titulo">Gerador de Postagem Grupo Dinatec</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub">Dinatec · Edite os campos · A prévia atualiza em tempo real</div>',
     unsafe_allow_html=True
@@ -1441,7 +1441,6 @@ with st.sidebar:
     if not badge:
         st.caption("⚠️ Campo obrigatório")
 
-    st.markdown("---")
     codigo_interno = st.text_input("🔍 Código Interno do Produto", value="",
                                    placeholder="Ex: 80741")
 
