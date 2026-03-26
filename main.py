@@ -1469,7 +1469,6 @@ with st.sidebar:
     veiculos = campo_obrigatorio("🚛 Veículos compatíveis",  value="")
 
     # ── Campo Marca do Produto ─────────────────────────────────────────────
-    st.markdown("---")
     st.markdown("### 🏭 Marca do Produto")
 
     nome_marca_input = st.text_input(
@@ -1502,7 +1501,6 @@ with st.sidebar:
                     width=160,
                 )
 
-    st.markdown("---")
     st.markdown("### 🏢 Unidade / Contatos")
 
     empresa_sel = st.selectbox(
@@ -1528,7 +1526,6 @@ with st.sidebar:
     whatsapp  = campo_obrigatorio("💬 WhatsApp",  value=_emp["whatsapp"],  placeholder="(xx) xxxxx-xxxx",    key=f"wp_{_key}")
     endereco  = _emp["endereco"]
 
-    st.markdown("---")
     st.markdown("### 📦 Foto do Produto")
 
     foto_upload  = None
@@ -1562,18 +1559,6 @@ with st.sidebar:
         _foto_bytes = foto_upload.read()
 
     foto_final = io.BytesIO(_foto_bytes) if _foto_bytes else None
-
-    st.markdown("""
-    <div style="background:#fff8ee;border:1px solid #d4b07a;border-radius:8px;
-                padding:12px 16px;margin-top:12px;font-size:.82rem;
-                color:#5a3200;line-height:1.7;">
-    💡 <b>Como usar:</b><br>
-    1. Preencha os campos de texto acima<br>
-    2. (Opcional) Envie a foto do produto<br>
-    3. Veja a prévia ao lado<br>
-    4. Baixe o card em <b>PNG</b> ou <b>JPG</b>
-    </div>
-    """, unsafe_allow_html=True)
 
 # ── Gerar e exibir o card ─────────────────────────────────────────────────────
 col_preview, col_download = st.columns([3, 1], gap="large")
