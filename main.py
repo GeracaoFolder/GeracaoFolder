@@ -187,20 +187,87 @@ def cadastrar_marca(nome: str, logo_dados: bytes, logo_mime: str = "image/png") 
 _BASE_URL_IMAGENS = "https://www.grupodinatec.com.br/imagens"
 
 
+_HEADERS_NAVEGADOR = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
+
 def buscar_imagens_produto(codigo: str) -> list[dict]:
     """
     Tenta baixar as variantes _1 a _5 da imagem do produto.
-    Retorna lista de dicts com 'label' e 'bytes' para cada imagem encontrada.
+    Estratégia 1: FTP (credenciais configuradas) — evita bot-protection HTTP.
+    Estratégia 2: HTTP com headers de navegador (fallback).
+    Valida com PIL antes de aceitar — garante que são bytes de imagem real.
+    Retorna lista de dicts com 'label', 'url' e 'bytes'.
     """
+    import ftplib as _ftplib
+
     encontradas = []
+
+    # ── Estratégia 1: FTP ────────────────────────────────────────────────────
+    ftp_host     = _cfg("FTP_HOST")
+    ftp_port     = int(_cfg("FTP_PORT") or 21)
+    ftp_user     = _cfg("FTP_USER")
+    ftp_password = _cfg("FTP_PASSWORD")
+    ftp_pasta    = _cfg("FTP_PASTA") or "/imagens"
+
+    if ftp_host and ftp_user:
+        try:
+            _ftp = _ftplib.FTP()
+            _ftp.connect(ftp_host, ftp_port, timeout=20)
+            _ftp.login(ftp_user, ftp_password)
+            try:
+                _ftp.cwd(ftp_pasta)
+            except _ftplib.error_perm:
+                pass  # pasta não existe — nenhuma imagem no FTP
+
+            for i in range(1, 6):
+                nome_arq = f"{codigo}_{i}.jpg"
+                buf = io.BytesIO()
+                try:
+                    _ftp.retrbinary(f"RETR {nome_arq}", buf.write)
+                    raw = buf.getvalue()
+                    if len(raw) < 1024:
+                        continue
+                    _img_test = Image.open(io.BytesIO(raw))
+                    _img_test.load()
+                    url = f"{_BASE_URL_IMAGENS}/{nome_arq}"
+                    encontradas.append({"label": f"Imagem {i}", "url": url, "bytes": raw})
+                except Exception:
+                    continue
+
+            _ftp.quit()
+        except Exception:
+            pass  # FTP indisponível — tenta HTTP abaixo
+
+    if encontradas:
+        return encontradas
+
+    # ── Estratégia 2: HTTP ───────────────────────────────────────────────────
     for i in range(1, 6):
         url = f"{_BASE_URL_IMAGENS}/{codigo}_{i}.jpg"
         try:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200 and resp.content:
-                encontradas.append({"label": f"Imagem {i}", "url": url, "bytes": resp.content})
+            resp = requests.get(url, headers=_HEADERS_NAVEGADOR,
+                                timeout=10, allow_redirects=True)
+            if resp.status_code != 200 or len(resp.content) < 1024:
+                continue
+            ct = resp.headers.get("Content-Type", "")
+            if "text" in ct or "html" in ct:
+                continue  # bot-protection page, não é imagem
+            _img_test = Image.open(io.BytesIO(resp.content))
+            _img_test.load()
+            encontradas.append({"label": f"Imagem {i}", "url": url, "bytes": resp.content})
         except Exception:
             continue
+
     return encontradas
 
 
@@ -382,7 +449,7 @@ def fonte_auto_tamanho(draw, texto, candidatos, largura_max, tam_inicial, tam_mi
 # FUNÇÃO PRINCIPAL DE GERAÇÃO DO CARD
 # ══════════════════════════════════════════════════════════════════════════════
 
-def gerar_rodape(W, site, telefone, whatsapp, fator_s):
+def gerar_rodape(W, site, telefone, whatsapp, fator_s, endereco=""):
     """
     Gera a faixa de rodapé personalizada com a logo da empresa e contatos.
 
@@ -419,8 +486,11 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s):
     fonte_valor = carregar_fonte(FONTS_REGULAR, cs(17))
 
     # ── Listar contatos preenchidos ───────────────────────────────────────────
+    # Endereço pode ter \n — usa só a primeira linha no rodapé para não estourar
+    _end_linha = (endereco.split("\n")[0].strip()) if endereco else ""
     contatos = [(l, v.strip()) for l, v in
-                [("Site", site), ("Tel", telefone), ("WhatsApp", whatsapp)]
+                [("End.", _end_linha), ("Site", site),
+                 ("Tel", telefone), ("WhatsApp", whatsapp)]
                 if v and v.strip()]
 
     # ── Carregar e escalar a logo ─────────────────────────────────────────────
@@ -486,7 +556,8 @@ def gerar_card(badge, codigo, nome, veiculos,
                foto_produto=None,
                site="", telefone="", whatsapp="",
                imagem_marca="",
-               marca_logo_bytes: bytes | None = None):
+               marca_logo_bytes: bytes | None = None,
+               endereco=""):
     """
     Gera o card de promoção a partir de um canvas branco.
 
@@ -815,7 +886,7 @@ def gerar_card(badge, codigo, nome, veiculos,
     # ══════════════════════════════════════════════════════════════════════════
 
     # ── Gerar rodapé personalizado (logo + contatos) ─────────────────────────
-    rodape_custom = gerar_rodape(W, site, telefone, whatsapp, fator_s)
+    rodape_custom = gerar_rodape(W, site, telefone, whatsapp, fator_s, endereco=endereco)
     RODAPE_CUSTOM_H = rodape_custom.height
 
     if foto_ok:
@@ -888,33 +959,51 @@ def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | Non
 
 def _melhorar_logo_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | None:
     """
-    Envia a logo para o Gemini para melhorar qualidade e remover o fundo.
-    Retorna os bytes da imagem processada, ou None em caso de erro.
+    Melhora a logo usando PIL (sem IA generativa):
+      1. Amplia para pelo menos 1 200 px no maior lado (LANCZOS)
+      2. Aplica UnsharpMask para nitidez máxima
+      3. Aumenta levemente contraste e saturação
+      4. Remove fundo branco/quase-branco (torna transparente)
+      5. Salva como PNG de alta qualidade
+
+    Não usa Gemini para evitar deformação ou alteração do design original.
     """
+    from PIL import ImageFilter, ImageEnhance
+
     try:
-        client = google_genai.Client(api_key=_cfg("GEMINI_API_KEY"))
-        resposta = client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=[
-                genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
-                genai_types.Part(text=(
-                    "This is a brand logo image. Please improve it with these requirements: "
-                    "remove the background completely making it pure white (#FFFFFF), "
-                    "sharpen and clean all edges, improve overall quality and resolution, "
-                    "keep exactly the same design, colors, shapes and text as the original logo. "
-                    "Output a professional high-quality version of this exact same logo."
-                )),
-            ],
-            config=genai_types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"],
-            ),
-        )
-        for part in resposta.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.data:
-                return part.inline_data.data
-        return None
+        img = Image.open(io.BytesIO(imagem_bytes)).convert("RGBA")
+
+        # 1. Ampliar se a imagem for pequena (garante nitidez ao imprimir)
+        TAMANHO_MIN = 1200
+        maior = max(img.width, img.height)
+        if maior < TAMANHO_MIN:
+            escala = TAMANHO_MIN / maior
+            novo_w = max(1, int(img.width  * escala))
+            novo_h = max(1, int(img.height * escala))
+            img = img.resize((novo_w, novo_h), Image.LANCZOS)
+
+        # 2. Nitidez via UnsharpMask no canal RGB (preserva alpha)
+        r, g, b, a = img.split()
+        rgb = Image.merge("RGB", (r, g, b))
+        rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.5, percent=180, threshold=2))
+
+        # 3. Leve aumento de contraste e saturação
+        rgb = ImageEnhance.Contrast(rgb).enhance(1.08)
+        rgb = ImageEnhance.Color(rgb).enhance(1.05)
+
+        # 4. Recompor RGBA e remover fundo branco
+        r2, g2, b2 = rgb.split()
+        img = Image.merge("RGBA", (r2, g2, b2, a))
+        img = remover_fundo_branco(img, tolerancia=30)
+
+        # 5. Salvar como PNG sem perda
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        buf.seek(0)
+        return buf.read()
+
     except Exception as e:
-        st.error(f"Erro Gemini (logo): {e}")
+        st.error(f"Erro ao processar logo: {e}")
         return None
 
 
@@ -1114,14 +1203,21 @@ def dialog_cadastrar_marca(nome_marca: str):
     chave_orig  = f"mrc_orig_{nome_marca}"
     chave_gem   = f"mrc_gem_{nome_marca}"
     chave_salvo = f"mrc_salvo_{nome_marca}"
+    chave_url   = f"mrc_url_{nome_marca}"
 
     for chave, padrao in [
         (chave_orig,  None),
         (chave_gem,   None),
         (chave_salvo, False),
+        (chave_url,   ""),
     ]:
         if chave not in st.session_state:
             st.session_state[chave] = padrao
+
+    def _limpar_dialog():
+        for ch in (chave_orig, chave_gem, chave_url):
+            st.session_state[ch] = None if ch != chave_url else ""
+        st.session_state[chave_salvo] = False
 
     # ── Tela de confirmação pós-salvamento ─────────────────────────────────
     if st.session_state[chave_salvo]:
@@ -1132,18 +1228,63 @@ def dialog_cadastrar_marca(nome_marca: str):
         return
 
     st.markdown(f"**Marca:** `{nome_marca}`")
-    st.info(
-        "Faça o upload da logo abaixo. "
-        "O Gemini irá remover o fundo e melhorar a qualidade automaticamente."
+    st.info("Cole a URL da imagem **ou** faça upload. O Gemini melhora automaticamente.")
+
+    # ── Opção 1: URL da imagem ──────────────────────────────────────────────
+    chave_url = f"mrc_url_{nome_marca}"
+    if chave_url not in st.session_state:
+        st.session_state[chave_url] = ""
+
+    url_logo = st.text_input(
+        "🔗 URL da imagem",
+        value=st.session_state[chave_url],
+        placeholder="https://exemplo.com/logo.png",
+        key=f"mrc_url_input_{nome_marca}",
     )
 
+    if url_logo.strip() and url_logo.strip() != st.session_state[chave_url]:
+        st.session_state[chave_url] = url_logo.strip()
+        with st.spinner("⬇ Baixando imagem da URL..."):
+            try:
+                _headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0 Safari/537.36"
+                    ),
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+                    "Referer": url_logo.strip(),
+                }
+                resp = requests.get(url_logo.strip(), headers=_headers, timeout=10)
+                resp.raise_for_status()
+                imagem_bytes = resp.content
+                # detectar mime pelo Content-Type ou extensão
+                ct = resp.headers.get("Content-Type", "image/png").split(";")[0].strip()
+                if ct not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+                    ct = "image/png"
+                if st.session_state[chave_orig] != imagem_bytes:
+                    st.session_state[chave_orig] = imagem_bytes
+                    st.session_state[chave_gem]  = None
+                    with st.spinner("🤖 Melhorando logo com Gemini..."):
+                        resultado = _melhorar_logo_gemini(imagem_bytes, ct)
+                    st.session_state[chave_gem] = resultado if resultado else imagem_bytes
+                    if not resultado:
+                        st.warning("Gemini não retornou imagem. Usando original.")
+            except Exception as e:
+                st.error(f"Erro ao baixar a imagem: {e}")
+
+    st.markdown("<div style='text-align:center;color:#888;font-size:.8rem;margin:4px 0'>— ou —</div>",
+                unsafe_allow_html=True)
+
+    # ── Opção 2: Upload de arquivo ──────────────────────────────────────────
     arquivo = st.file_uploader(
-        "Selecione a logo (JPG, PNG ou WebP)",
+        "📂 Upload da logo (JPG, PNG ou WebP)",
         type=["jpg", "jpeg", "png", "webp"],
         key=f"mrc_upload_{nome_marca}",
     )
 
-    # ── Processar novo arquivo com Gemini ──────────────────────────────────
+    # ── Processar arquivo enviado via upload ────────────────────────────────
     if arquivo:
         imagem_bytes = arquivo.getvalue()
         mime_type    = arquivo.type or "image/png"
@@ -1175,6 +1316,7 @@ def dialog_cadastrar_marca(nome_marca: str):
         cancelar = col2.button("❌ Cancelar",     use_container_width=True)
 
         if cancelar:
+            _limpar_dialog()
             st.rerun()
 
         if salvar:
@@ -1189,6 +1331,7 @@ def dialog_cadastrar_marca(nome_marca: str):
                 st.rerun()
     else:
         if st.button("❌ Cancelar", use_container_width=True):
+            _limpar_dialog()
             st.rerun()
 
 
@@ -1234,6 +1377,49 @@ div[data-testid="stDownloadButton"] > button:hover {
 }
 </style>
 """, unsafe_allow_html=True)
+
+# ── Dados das unidades da empresa ─────────────────────────────────────────────
+_EMPRESAS = {
+    "Selecione a unidade...": {
+        "endereco": "", "site": "", "telefone": "", "whatsapp": "",
+    },
+    "Matriz - Ribeirão Preto": {
+        "endereco": "Av. Luiz Maggioni, 1585 - Dist. Industrial Pref. Luiz Roberto Jabali\nRibeirão Preto - SP - CEP 14072-055",
+        "site":     "www.dinatec.com.br",
+        "telefone": "(16) 2111 - 9100",
+        "whatsapp": "(16) 99731 - 7999",
+    },
+    "Filial - Araraquara": {
+        "endereco": "Av. Pres. Vargas, 2644 - Jardim Quitandinha, Araraquara - SP, 14801-018",
+        "site": "www.dinatec.com.br", 
+        "telefone": "(16) 3301 - 0110", 
+        "whatsapp": "(16) 99731 - 7999",
+    },
+    "Filial - São José do Rio Preto": {
+        "endereco": "R. Dr. Coutinho Cavalcante, 1310 - Jardim America, São José do Rio Preto - SP, 15055-300", 
+        "site": "www.dinatec.com.br", 
+        "telefone": "(17) 2138 - 1892", 
+        "whatsapp": "(16) 99731 - 7999",
+    },
+    "Filial - Limeira": {
+        "endereco": "R. Doná Geni Vargas Machado Gomes, 375 - Jardim Residencial, Limeira - SP, 13485-213", 
+        "site": "www.dinatec.com.br", 
+        "telefone": "(19) 3444 - 2001", 
+        "whatsapp": "(16) 99731 - 7999",
+    },
+    "Filial - Itumbiara": {
+        "endereco": "Av. Dr. Celso Maeda, 2850 - A - Jardim Liberdade, Itumbiara - GO, 75515-255", 
+        "site": "www.dinatec.com.br", 
+        "telefone": "(64) ", 
+        "whatsapp": "(16) 99731 - 7999",
+    },
+    "Filial - Brasília": {
+        "endereco": "St. G Sul Q CS CSG 5 - Taguatinga, Brasília - DF, 72035-505", 
+        "site": "www.dinatec.com.br", 
+        "telefone": "(61) 3356 - 0110", 
+        "whatsapp": "(16) 99731 - 7999",
+    },
+}
 
 st.markdown('<div class="titulo">🔧 Gerador de Promoção</div>', unsafe_allow_html=True)
 st.markdown(
@@ -1319,10 +1505,30 @@ with st.sidebar:
                 )
 
     st.markdown("---")
-    st.markdown("### 🌐 Contatos da Empresa")
-    site      = campo_obrigatorio("🌍 Site",      value="", placeholder="www.dinatec.com.br")
-    telefone  = campo_obrigatorio("📞 Telefone",  value="", placeholder="(xx) xxxx-xxxx")
-    whatsapp  = campo_obrigatorio("💬 WhatsApp",  value="", placeholder="(xx) xxxxx-xxxx")
+    st.markdown("### 🏢 Unidade / Contatos")
+
+    empresa_sel = st.selectbox(
+        "🏬 Selecione a unidade",
+        options=list(_EMPRESAS.keys()),
+        key="empresa_sel",
+    )
+    _emp = _EMPRESAS[empresa_sel]
+
+    if _emp["endereco"]:
+        st.markdown(
+            f"""<div style="background:#f0f7ff;border-left:4px solid #2979c0;
+                            border-radius:6px;padding:8px 12px;margin:6px 0 10px;
+                            font-size:.82rem;color:#1a3a5c;line-height:1.6;">
+                📍 {_emp['endereco'].replace(chr(10),'<br>')}
+                </div>""",
+            unsafe_allow_html=True,
+        )
+
+    _key = empresa_sel  # força reset dos campos ao trocar de empresa
+    site      = campo_obrigatorio("🌍 Site",      value=_emp["site"],      placeholder="www.dinatec.com.br", key=f"site_{_key}")
+    telefone  = campo_obrigatorio("📞 Telefone",  value=_emp["telefone"],  placeholder="(xx) xxxx-xxxx",     key=f"tel_{_key}")
+    whatsapp  = campo_obrigatorio("💬 WhatsApp",  value=_emp["whatsapp"],  placeholder="(xx) xxxxx-xxxx",    key=f"wp_{_key}")
+    endereco  = _emp["endereco"]
 
     st.markdown("---")
     st.markdown("### 📦 Foto do Produto")
@@ -1383,7 +1589,8 @@ if faltando:
 try:
     card = gerar_card(badge, codigo, nome, veiculos, foto_final, site, telefone, whatsapp,
                       imagem_marca=_imagem_marca,
-                      marca_logo_bytes=_marca_logo_bytes)
+                      marca_logo_bytes=_marca_logo_bytes,
+                      endereco=endereco)
 
     with col_preview:
         st.image(card, width='stretch',
