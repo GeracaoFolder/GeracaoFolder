@@ -1463,7 +1463,6 @@ with st.sidebar:
 
         with st.spinner("Buscando imagens..."):
             _imagens = buscar_imagens_produto(codigo_interno.strip())
-    st.markdown("---")
 
     codigo   = campo_obrigatorio("🔢 Numero do Fabricante",     value=_cod_pre)
     nome     = campo_obrigatorio("📦 Descrição do produto",       value=_nome_pre)
