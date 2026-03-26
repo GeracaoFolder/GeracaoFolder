@@ -820,14 +820,23 @@ def gerar_card(badge, codigo, nome, veiculos,
         try:
             # Remove fundo branco/quase-branco para não bloquear a foto do produto
             _logo_marca_img = remover_fundo_branco(_logo_marca_img)
-            MARCA_MAX_W = cx(300)
-            MARCA_MAX_H = cs(300)
-            _esc = min(MARCA_MAX_W / _logo_marca_img.width, MARCA_MAX_H / _logo_marca_img.height)
+
+            # Retângulo delimitador do logo da marca (canto superior direito, ao lado do badge)
+            # Referência 913×915: x: 460–905, y: 5–115
+            CAIXA_MARCA = [cx(460), cy(5), cx(905), cy(115)]
+            _MARC_W = CAIXA_MARCA[2] - CAIXA_MARCA[0]
+            _MARC_H = CAIXA_MARCA[3] - CAIXA_MARCA[1]
+
+            # Escala proporcional para caber no retângulo sem estourar
+            _esc = min(_MARC_W / _logo_marca_img.width, _MARC_H / _logo_marca_img.height)
             _lw  = max(1, int(_logo_marca_img.width  * _esc))
             _lh  = max(1, int(_logo_marca_img.height * _esc))
             _logo_marca_img = _logo_marca_img.resize((_lw, _lh), Image.LANCZOS)
-            _lx = CAIXA_CODIGO[0] - cs(-580)
-            _ly = CAIXA_CODIGO[3] - cs(228)
+
+            # Centralizar dentro do retângulo
+            _lx = CAIXA_MARCA[0] + (_MARC_W - _lw) // 2
+            _ly = CAIXA_MARCA[1] + (_MARC_H - _lh) // 2
+
             _base_m = canvas_base.convert("RGBA")
             _base_m.paste(_logo_marca_img, (_lx, _ly), _logo_marca_img)
             canvas_base = _base_m.convert("RGB")
