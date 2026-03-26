@@ -1421,7 +1421,7 @@ _EMPRESAS = {
     },
 }
 
-st.markdown('<div class="titulo">Gerador de Postagem Grupo Dinatec</div>', unsafe_allow_html=True)
+st.markdown('<div class="titulo">Gerador de Postagem Grupo</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub">Dinatec · Edite os campos · A prévia atualiza em tempo real</div>',
     unsafe_allow_html=True
@@ -1441,6 +1441,7 @@ with st.sidebar:
     if not badge:
         st.caption("⚠️ Campo obrigatório")
 
+    st.markdown("---")
     codigo_interno = st.text_input("🔍 Código Interno do Produto", value="",
                                    placeholder="Ex: 80741")
 
@@ -1463,7 +1464,7 @@ with st.sidebar:
 
         with st.spinner("Buscando imagens..."):
             _imagens = buscar_imagens_produto(codigo_interno.strip())
-st.markdown("---")
+    st.markdown("---")
 
     codigo   = campo_obrigatorio("🔢 Numero do Fabricante",     value=_cod_pre)
     nome     = campo_obrigatorio("📦 Descrição do produto",       value=_nome_pre)
