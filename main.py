@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 import re
+import zipfile
 import mysql.connector
 import requests
 import base64
@@ -1516,9 +1517,9 @@ with st.sidebar:
         with st.spinner("Buscando imagens..."):
             _imagens = buscar_imagens_produto(codigo_interno.strip())
 
-    codigo   = campo_obrigatorio("🔢 Numero do Fabricante",     value=_cod_pre)
-    nome     = campo_obrigatorio("📦 Descrição do produto",       value=_nome_pre)
-    veiculos = campo_obrigatorio("🚛 Veículos compatíveis",  value="")
+    codigo   = campo_obrigatorio("🔢 Numero do Fabricante", value=_cod_pre)
+    nome     = campo_obrigatorio("📦 Descrição do produto", value=_nome_pre)
+    veiculos = campo_obrigatorio("🚛 Veículos compatíveis", value="")
 
     # ── Campo Marca do Produto ─────────────────────────────────────────────
     st.markdown("### 🏭 Marca do Produto")
@@ -1686,6 +1687,43 @@ try:
             mime="image/jpeg",
             use_container_width=True,
             key="dl_jpg",
+        )
+
+        st.markdown("---")
+
+        # ── Gerar Unidade: ZIP com um JPG por unidade ─────────────────────────
+        _unidades = {k: v for k, v in _EMPRESAS.items()
+                     if k != "Selecione a unidade..."}
+        _buf_zip = io.BytesIO()
+        with zipfile.ZipFile(_buf_zip, "w", zipfile.ZIP_DEFLATED) as _zf:
+            for _nome_un, _dados_un in _unidades.items():
+                _foto_un = io.BytesIO(_foto_bytes) if _foto_bytes else None
+                _card_un = gerar_card(
+                    badge, codigo, nome, veiculos, _foto_un,
+                    site=_dados_un["site"],
+                    telefone=_dados_un["telefone"],
+                    whatsapp=_dados_un["whatsapp"],
+                    imagem_marca=_imagem_marca,
+                    marca_logo_bytes=_marca_logo_bytes,
+                    endereco=_dados_un["endereco"],
+                    codigo_interno=codigo_interno,
+                )
+                _buf_un = io.BytesIO()
+                _card_un.save(_buf_un, format="JPEG", quality=92)
+                _arq_un = re.sub(r"[^\w]", "_", _nome_un).strip("_")
+                _zf.writestr(
+                    f"promo_{_nome_arquivo(codigo)}_{_arq_un}.jpg",
+                    _buf_un.getvalue(),
+                )
+        _buf_zip.seek(0)
+
+        st.download_button(
+            "📦 Gerar Unidade",
+            data=_buf_zip,
+            file_name=f"promo_{_nome_arquivo(codigo)}_unidades.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="dl_zip",
         )
 
 except Exception as erro:
