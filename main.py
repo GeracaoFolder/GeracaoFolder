@@ -484,13 +484,14 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s, endereco=""):
 
     fonte_label = carregar_fonte(FONTS_BOLD,    cs(17))
     fonte_valor = carregar_fonte(FONTS_REGULAR, cs(17))
+    fonte_end   = carregar_fonte(FONTS_BOLD,    cs(14))
 
-    # ── Listar contatos preenchidos ───────────────────────────────────────────
-    # Endereço pode ter \n — usa só a primeira linha no rodapé para não estourar
+    # Endereço vai abaixo da logo — 1ª linha apenas para não estourar
     _end_linha = (endereco.split("\n")[0].strip()) if endereco else ""
+
+    # Contatos (sem endereço — ele fica abaixo da logo)
     contatos = [(l, v.strip()) for l, v in
-                [("End.", _end_linha), ("Site", site),
-                 ("Tel", telefone), ("WhatsApp", whatsapp)]
+                [("Site", site), ("Tel", telefone), ("WhatsApp", whatsapp)]
                 if v and v.strip()]
 
     # ── Carregar e escalar a logo ─────────────────────────────────────────────
@@ -503,10 +504,23 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s, endereco=""):
         logo_h   = max(1, int(logo_img.height * escala))
         logo_img = logo_img.resize((logo_w, logo_h), Image.LANCZOS)
 
-    # ── Calcular largura e altura do bloco de texto ───────────────────────────
+    # ── Medir endereço e bloco de texto ──────────────────────────────────────
     draw_tmp = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-    linha_h  = draw_tmp.textbbox((0, 0), "Ag", font=fonte_valor)[3]
-    texto_w  = 0
+
+    GAP_END = cs(5)
+    if _end_linha:
+        bb_end  = draw_tmp.textbbox((0, 0), _end_linha, font=fonte_end)
+        end_h   = bb_end[3] - bb_end[1]
+        end_w   = bb_end[2] - bb_end[0]
+    else:
+        end_h = end_w = 0
+        GAP_END = 0
+
+    # Altura da coluna esquerda: logo + gap + endereço
+    logo_col_h = logo_h + GAP_END + end_h
+
+    linha_h = draw_tmp.textbbox((0, 0), "Ag", font=fonte_valor)[3]
+    texto_w = 0
     if contatos:
         for label, valor in contatos:
             bb = draw_tmp.textbbox((0, 0), f"{label}: {valor}", font=fonte_label)
@@ -515,7 +529,7 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s, endereco=""):
 
     # ── Calcular dimensões totais do rodapé ───────────────────────────────────
     bloco_w = logo_w + (GAP + texto_w if contatos else 0)
-    bloco_h = max(logo_h, texto_h)
+    bloco_h = max(logo_col_h, texto_h)
     TOTAL_H = bloco_h + 2 * PAD_V + cs(4)   # +4 = linha separadora
 
     # ── Criar canvas do rodapé ───────────────────────────────────────────────
@@ -529,16 +543,27 @@ def gerar_rodape(W, site, telefone, whatsapp, fator_s, endereco=""):
     origem_x = (W - bloco_w) // 2
     origem_y = cs(4) + (TOTAL_H - cs(4) - bloco_h) // 2
 
-    # ── Logo centralizada verticalmente no bloco ──────────────────────────────
+    # ── Logo + endereço (coluna esquerda) ─────────────────────────────────────
     if logo_img:
-        ly = origem_y + (bloco_h - logo_h) // 2
-        rodape.paste(logo_img, (origem_x, ly), logo_img)
+        # Alinhar bloco logo+endereço verticalmente ao centro da coluna
+        bloco_esq_y = origem_y + (bloco_h - logo_col_h) // 2
+
+        # Logo centralizada horizontalmente dentro da largura logo_w
+        _lx = origem_x + (logo_w - logo_img.width) // 2
+        rodape.paste(logo_img, (_lx, bloco_esq_y), logo_img)
+
+        # Endereço abaixo da logo, centralizado na largura total do rodapé e negrito
+        if _end_linha:
+            _ey = bloco_esq_y + logo_h + GAP_END + cs(14)
+            _ex = (W - end_w) // 2
+            draw.text((_ex, _ey - bb_end[1]), _end_linha,
+                      font=fonte_end, fill=(255, 255, 255))
 
     # ── Texto de contatos centralizado verticalmente no bloco ─────────────────
     if contatos:
-        txt_x   = origem_x + logo_w + GAP
+        txt_x       = origem_x + logo_w + GAP
         bloco_txt_h = len(contatos) * (linha_h + LINHA_SP) - LINHA_SP
-        y_txt   = origem_y + (bloco_h - bloco_txt_h) // 2
+        y_txt       = origem_y + (bloco_h - bloco_txt_h) // 2
 
         for label, valor in contatos:
             bb_label = draw.textbbox((0, 0), f"{label}: ", font=fonte_label)
@@ -557,7 +582,8 @@ def gerar_card(badge, codigo, nome, veiculos,
                site="", telefone="", whatsapp="",
                imagem_marca="",
                marca_logo_bytes: bytes | None = None,
-               endereco=""):
+               endereco="",
+               codigo_interno=""):
     """
     Gera o card de promoção a partir de um canvas branco.
 
@@ -642,17 +668,32 @@ def gerar_card(badge, codigo, nome, veiculos,
     # Esquerda: retângulo marrom com o código | Direita: fundo branco com o nome
     # ══════════════════════════════════════════════════════════════════════════
 
-    # Retângulo marrom (lado esquerdo) — contém o código do produto
-    CAIXA_CODIGO = [cx(7), cy(120), cx(247), cy(177)]
+    # Barra de código: fonte fixa, largura e altura dinâmicas conforme o conteúdo
+    fonte_codigo = carregar_fonte(FONTS_BOLD_ITALIC, cs(28))
+    _PAD_COD   = cs(10)   # padding vertical interno
+    _PAD_H_COD = cs(16)   # padding horizontal interno
+    _SP_LINHAS = cs(5)    # espaço entre as duas linhas
+
+    # Montar texto: "CI.: xxx | codigo_fabricante" ou só "codigo_fabricante"
+    _tem_ci = bool(codigo_interno and codigo_interno.strip())
+    _texto_codigo = (f"CI.: {codigo_interno.strip()} | {codigo}"
+                     if _tem_ci else codigo)
+
+    _bb_cod = draw.textbbox((0, 0), _texto_codigo, font=fonte_codigo)
+    _lh_cod = _bb_cod[3] - _bb_cod[1]
+    _lw_cod = _bb_cod[2] - _bb_cod[0]
+    _barra_h = _lh_cod + 2 * _PAD_COD
+    _barra_w = _lw_cod + 2 * _PAD_H_COD
+
+    # Limitar para não ultrapassar metade do card
+    _barra_w = max(cx(100), min(_barra_w, W // 2))
+
+    CAIXA_CODIGO = [cx(7), cy(120), cx(7) + _barra_w, cy(120) + _barra_h]
     draw.rectangle(CAIXA_CODIGO, fill=COR_AZUL)
 
-    # Texto do código — italic bold branco, centralizado no retângulo marrom
-    largura_codigo = CAIXA_CODIGO[2] - CAIXA_CODIGO[0] - cs(14)
-    fonte_codigo   = fonte_auto_tamanho(draw, codigo, FONTS_BOLD_ITALIC,
-                                        largura_codigo, tam_inicial=cs(32))
-    centralizar_texto(draw, codigo, fonte_codigo, CAIXA_CODIGO, COR_BRANCO)
+    centralizar_texto(draw, _texto_codigo, fonte_codigo, CAIXA_CODIGO, COR_BRANCO)
 
-    # Área branca (lado direito) — contém o nome do produto
+    # Área branca (lado direito) — mesma altura dinâmica da barra azul
     CAIXA_NOME = [CAIXA_CODIGO[2] + 1, CAIXA_CODIGO[1], W - cx(7), CAIXA_CODIGO[3]]
     draw.rectangle(CAIXA_NOME, fill=COR_BRANCO)
 
@@ -673,7 +714,8 @@ def gerar_card(badge, codigo, nome, veiculos,
     # ══════════════════════════════════════════════════════════════════════════
 
     # Limites da área reservada para a foto no template
-    AREA_X0 = cx(10);  AREA_Y0 = cy(178)
+    # AREA_Y0 segue o fundo da barra de código (dinâmico)
+    AREA_X0 = cx(10);  AREA_Y0 = CAIXA_CODIGO[3] + 1
     AREA_X1 = cx(903); AREA_Y1 = cy(790)
     AREA_W  = AREA_X1 - AREA_X0   # largura total disponível
     AREA_H  = AREA_Y1 - AREA_Y0   # altura total disponível
@@ -822,10 +864,11 @@ def gerar_card(badge, codigo, nome, veiculos,
             _logo_marca_img = remover_fundo_branco(_logo_marca_img)
 
             # Retângulo delimitador do logo da marca (canto superior direito, ao lado do badge)
-            # Referência 913×915: x: 460–905, y: 5–115
-            CAIXA_MARCA = [cx(460), cy(5), cx(905), cy(115)]
-            _MARC_W = CAIXA_MARCA[2] - CAIXA_MARCA[0]
-            _MARC_H = CAIXA_MARCA[3] - CAIXA_MARCA[1]
+            # Referência 913×915: x: 460–905, y: 3–118
+            _MARC_X0 = cx(460); _MARC_X1 = cx(905)
+            _MARC_Y0 = cy(3);   _MARC_Y1 = cy(118)
+            _MARC_W  = _MARC_X1 - _MARC_X0
+            _MARC_H  = _MARC_Y1 - _MARC_Y0
 
             # Escala proporcional para caber no retângulo sem estourar
             _esc = min(_MARC_W / _logo_marca_img.width, _MARC_H / _logo_marca_img.height)
@@ -834,8 +877,8 @@ def gerar_card(badge, codigo, nome, veiculos,
             _logo_marca_img = _logo_marca_img.resize((_lw, _lh), Image.LANCZOS)
 
             # Centralizar dentro do retângulo
-            _lx = CAIXA_MARCA[0] + (_MARC_W - _lw) // 2
-            _ly = CAIXA_MARCA[1] + (_MARC_H - _lh) // 2
+            _lx = _MARC_X0 + (_MARC_W - _lw) // 2
+            _ly = _MARC_Y0 + (_MARC_H - _lh) // 2
 
             _base_m = canvas_base.convert("RGBA")
             _base_m.paste(_logo_marca_img, (_lx, _ly), _logo_marca_img)
@@ -1582,7 +1625,8 @@ try:
     card = gerar_card(badge, codigo, nome, veiculos, foto_final, site, telefone, whatsapp,
                       imagem_marca=_imagem_marca,
                       marca_logo_bytes=_marca_logo_bytes,
-                      endereco=endereco)
+                      endereco=endereco,
+                      codigo_interno=codigo_interno)
 
     with col_preview:
         st.image(card, width='stretch',
