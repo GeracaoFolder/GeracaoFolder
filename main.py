@@ -1,15 +1,3 @@
-"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║          GERADOR DE CARD DE PROMOÇÃO — QUINELATO FREIOS                     ║
-║                                                                              ║
-║  Como usar:                                                                  ║
-║    1. Execute: python -m streamlit run main.py                               ║
-║    2. Edite os campos no painel lateral                                      ║
-║    3. (Opcional) Envie a foto do produto                                     ║
-║    4. Baixe o card em PNG ou JPG (300 dpi)                                   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-"""
-
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -24,6 +12,50 @@ from google.genai import types as genai_types
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _converter_svg_para_png(svg_bytes: bytes, largura: int = 1200) -> bytes:
+    """
+    Converte bytes SVG para bytes PNG de alta resolução.
+    Usa Playwright (Chromium headless) para renderizar o SVG —
+    funciona no Windows sem dependências nativas.
+    """
+    import tempfile
+    from playwright.sync_api import sync_playwright
+
+    # Gravar SVG num arquivo temporário
+    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False, dir=".") as tmp:
+        tmp.write(svg_bytes)
+        tmp_path = tmp.name
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": largura, "height": largura})
+            page.goto(f"file:///{os.path.abspath(tmp_path).replace(os.sep, '/')}")
+
+            # Esperar o SVG carregar e pegar suas dimensões reais
+            svg_el = page.query_selector("svg")
+            if svg_el is None:
+                raise ValueError("Não foi possível encontrar elemento SVG.")
+
+            bbox = svg_el.bounding_box()
+            if bbox:
+                # Redimensionar viewport para o tamanho real do SVG
+                page.set_viewport_size({
+                    "width": max(1, int(bbox["width"])),
+                    "height": max(1, int(bbox["height"])),
+                })
+
+            png_bytes = page.screenshot(type="png", omit_background=True)
+            browser.close()
+
+        return png_bytes
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 def _cfg(chave: str) -> str:
@@ -180,6 +212,26 @@ def cadastrar_marca(nome: str, logo_dados: bytes, logo_mime: str = "image/png") 
     except Exception as e:
         st.error(f"Erro ao salvar marca: {e}")
         return False
+    finally:
+        if cursor: cursor.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+def listar_marcas() -> list[str]:
+    """
+    Retorna lista com os nomes de todas as marcas cadastradas na tabela Marcas,
+    ordenadas alfabeticamente. Retorna lista vazia em caso de erro.
+    """
+    conn = cursor = None
+    try:
+        conn = _conn_bd()
+        cursor = conn.cursor()
+        cursor.execute(_SQL_CRIAR_MARCAS)
+        conn.commit()
+        cursor.execute("SELECT nome FROM Marcas ORDER BY nome ASC")
+        return [row[0] for row in cursor.fetchall()]
+    except Exception:
+        return []
     finally:
         if cursor: cursor.close()
         if conn and conn.is_connected(): conn.close()
@@ -960,6 +1012,11 @@ def gerar_card(badge, codigo, nome, veiculos,
         # Colar o rodapé personalizado logo abaixo do conteúdo
         canvas_final.paste(rodape_custom, (0, FIM_CONTEUDO))
 
+        canvas_final._rodape_y   = FIM_CONTEUDO
+        canvas_final._veiculos_y = Y_VEI
+        canvas_final._foto_y     = col_y
+        canvas_final._foto_fim   = fim_foto
+        canvas_final._ilustr_x   = rx   # início da faixa "IMAGEM ILUSTRATIVA"
         return canvas_final
 
     else:
@@ -969,6 +1026,11 @@ def gerar_card(badge, codigo, nome, veiculos,
         recorte      = canvas_base.crop((0, 0, W, RODAPE_Y_INICIO))
         canvas_final.paste(recorte, (0, 0))
         canvas_final.paste(rodape_custom, (0, RODAPE_Y_INICIO))
+        canvas_final._rodape_y   = RODAPE_Y_INICIO
+        canvas_final._veiculos_y = Y_VEI
+        canvas_final._foto_y     = AREA_Y0
+        canvas_final._foto_fim   = AREA_Y0
+        canvas_final._ilustr_x   = int(AREA_X1 - cs(28))
         return canvas_final
 
 
@@ -1092,6 +1154,132 @@ def _redimensionar_e_comprimir(imagem_bytes: bytes,
     return buf.read()
 
 
+def _montar_canvas_social(card_img, IMG_W, IMG_H):
+    """
+    Monta canvas para redes sociais com 4 fatias:
+      1. Cabeçalho — fixo no topo
+      2. Foto      — centralizada no espaço disponível (ampliada)
+      3. Veículos  — logo acima do rodapé
+      4. Rodapé    — no limite inferior
+    """
+    orig_w = card_img.width
+
+    # Posições originais gravadas em gerar_card
+    foto_y_orig    = getattr(card_img, '_foto_y',     int(0.45 * orig_w))
+    foto_fim_orig  = getattr(card_img, '_foto_fim',   foto_y_orig)
+    vei_y_orig     = getattr(card_img, '_veiculos_y', int(0.90 * orig_w))
+    rodape_y_orig  = getattr(card_img, '_rodape_y',   int(0.9531 * card_img.height))
+
+    escala = IMG_W / orig_w
+
+    # ── Fatias no original ────────────────────────────────────────────────────
+    cab_orig = card_img.crop((0, 0,             orig_w, foto_y_orig)).convert("RGB")
+    fot_orig = card_img.crop((0, foto_y_orig,   orig_w, foto_fim_orig)).convert("RGB")
+    vei_orig = card_img.crop((0, vei_y_orig,    orig_w, rodape_y_orig)).convert("RGB")
+    rod_orig = card_img.crop((0, rodape_y_orig, orig_w, card_img.height)).convert("RGB")
+
+    # ── Escalar rodapé para largura total; cabeçalho e veículos menores (mais
+    #    espaço vertical para a foto)
+    def _fit_w(img, w):
+        h = max(1, int(img.height * (w / img.width)))
+        return img.resize((w, h), Image.LANCZOS)
+
+    cab    = _fit_w(cab_orig,  IMG_W)
+    vei    = _fit_w(vei_orig,  IMG_W)
+    rodape = _fit_w(rod_orig,  IMG_W)
+
+    cab_h    = cab.height
+    vei_h    = vei.height
+    rodape_h = rodape.height
+
+    # ── Espaço disponível para a foto ────────────────────────────────────────
+    espaco_foto = IMG_H - cab_h - vei_h - rodape_h
+
+    ilustr_x_orig = getattr(card_img, '_ilustr_x', int(fot_orig.width * 0.958))
+
+    if fot_orig.width > 0 and fot_orig.height > 0 and espaco_foto > 10:
+        # Escala: 1.5× a largura máxima ou preenche a altura — o menor dos dois
+        escala_foto = min(espaco_foto / fot_orig.height, (IMG_W / fot_orig.width) * 1.5)
+        foto_w = int(fot_orig.width  * escala_foto)
+        foto_h = int(fot_orig.height * escala_foto)
+        foto   = fot_orig.resize((foto_w, foto_h), Image.LANCZOS)
+        foto_x = (IMG_W - foto_w) // 2   # centralizado
+        foto_y = cab_h + (espaco_foto - foto_h) // 2
+
+        # Faixa "IMAGEM ILUSTRATIVA": recortar do fot_orig e recolocar na borda direita
+        ilustr_strip_orig = fot_orig.crop((ilustr_x_orig, 0, fot_orig.width, fot_orig.height))
+        strip_w = max(1, int(ilustr_strip_orig.width  * escala_foto))
+        strip_h = max(1, int(ilustr_strip_orig.height * escala_foto))
+        ilustr_strip = ilustr_strip_orig.resize((strip_w, strip_h), Image.LANCZOS)
+    else:
+        foto         = None
+        ilustr_strip = None
+
+    # ── Montar canvas ─────────────────────────────────────────────────────────
+    canvas = Image.new("RGB", (IMG_W, IMG_H), (255, 255, 255))
+    canvas.paste(cab, (0, 0))
+    if foto:
+        canvas.paste(foto, (foto_x, foto_y))
+        if ilustr_strip and foto_w > IMG_W:
+            # Recolocar faixa do texto na borda direita do canvas
+            canvas.paste(ilustr_strip, (IMG_W - strip_w, foto_y))
+    canvas.paste(vei,    (0, IMG_H - rodape_h - vei_h))
+    canvas.paste(rodape, (0, IMG_H - rodape_h))
+
+    return canvas
+
+
+@st.dialog("📸 Instagram", width="small")
+def dialog_instagram(card_img):
+    """Seleção de formato Instagram: Retrato ou Stories."""
+
+    fmt = st.radio(
+        "Formato",
+        options=["retrato", "stories"],
+        format_func=lambda x: "📐 Retrato  1080×1350  4:5" if x == "retrato"
+                               else "📱 Stories  1080×1920  9:16",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if fmt == "retrato":
+        IMG_W, IMG_H = 1080, 1350
+        label   = "Retrato — 1080×1350 · 4:5"
+        caption = "Prévia 1080×1350"
+        fname   = "instagram_retrato"
+        info    = "👉 Melhor para engajamento — ocupa mais espaço na tela"
+    else:
+        IMG_W, IMG_H = 1080, 1920
+        label   = "Stories — 1080×1920 · 9:16"
+        caption = "Prévia 1080×1920"
+        fname   = "stories_vertical"
+        info    = "⏱️ Até 15 s por story  ·  ⚠️ Evite texto no topo/rodapé"
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#833ab4,#fd1d1d,#fcb045);
+                border-radius:10px;padding:12px 16px;margin:4px 0 12px;color:#fff;">
+      <div style="font-size:1rem;font-weight:700;">{label}</div>
+      <div style="font-size:.78rem;margin-top:4px;opacity:.9;">{info}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    canvas = _montar_canvas_social(card_img, IMG_W, IMG_H)
+    st.image(canvas, width='stretch', caption=caption)
+
+    buf_png = io.BytesIO()
+    canvas.save(buf_png, format="PNG", dpi=(300, 300))
+    buf_png.seek(0)
+    buf_jpg = io.BytesIO()
+    canvas.save(buf_jpg, format="JPEG", quality=95, dpi=(300, 300))
+    buf_jpg.seek(0)
+
+    col_a, col_b = st.columns(2)
+    col_a.download_button("⬇ PNG", data=buf_png, file_name=f"{fname}.png",
+                          mime="image/png",  width='stretch', key=f"dl_{fmt}_png")
+    col_b.download_button("⬇ JPG", data=buf_jpg, file_name=f"{fname}.jpg",
+                          mime="image/jpeg", width='stretch', key=f"dl_{fmt}_jpg")
+
+
 @st.dialog("📤 Atualizar FTP", width="large")
 def dialog_atualizar_ftp(codigo: str):
     import ftplib, io as _io
@@ -1101,21 +1289,83 @@ def dialog_atualizar_ftp(codigo: str):
     chave_original = f"ftp_original_{codigo}"
     chave_gemini   = f"ftp_gemini_{codigo}"
     chave_final    = f"ftp_final_{codigo}"
+    chave_url      = f"ftp_url_{codigo}"
+    chave_token    = f"ftp_token_{codigo}"
+    chave_token_v  = f"ftp_token_visto_{codigo}"
 
-    for chave, padrao in [
-        (chave_enviado,  False),
-        (chave_original, None),
-        (chave_gemini,   None),
-        (chave_final,    None),
-    ]:
-        if chave not in st.session_state:
-            st.session_state[chave] = padrao
+    # Detecta nova abertura: token mudou → reseta todo o estado de imagem
+    token_atual = st.session_state.get(chave_token, 0)
+    if st.session_state.get(chave_token_v, -1) != token_atual:
+        st.session_state[chave_token_v]  = token_atual
+        st.session_state[chave_enviado]  = False
+        st.session_state[chave_original] = None
+        st.session_state[chave_gemini]   = None
+        st.session_state[chave_final]    = None
+        st.session_state[chave_url]      = ""
+    else:
+        for chave, padrao in [
+            (chave_enviado,  False),
+            (chave_original, None),
+            (chave_gemini,   None),
+            (chave_final,    None),
+            (chave_url,      ""),
+        ]:
+            if chave not in st.session_state:
+                st.session_state[chave] = padrao
 
     st.markdown(f"**Código:** `{codigo}`")
     st.info(f"O arquivo será salvo como `{codigo}_1.jpg` no servidor.")
 
+    # ── Campo URL ────────────────────────────────────────────────────────────
+    with st.form("ftp_url_form", clear_on_submit=False, border=False):
+        url_digitada = st.text_input(
+            "🔗 Cole a URL da imagem (pressione Enter para processar)",
+            placeholder="https://exemplo.com/imagem.jpg",
+            disabled=st.session_state[chave_enviado],
+        )
+        url_submetida = st.form_submit_button(
+            "Carregar URL", use_container_width=True,
+            disabled=st.session_state[chave_enviado],
+        )
+
+    if url_submetida and url_digitada and url_digitada != st.session_state[chave_url]:
+        try:
+            with st.spinner("⬇️ Baixando imagem da URL..."):
+                resp = requests.get(
+                    url_digitada, timeout=20,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                resp.raise_for_status()
+                imagem_bytes_url = resp.content
+
+            if len(imagem_bytes_url) < 1024:
+                st.error("URL não retornou uma imagem válida.")
+                st.session_state[chave_original] = None
+                st.session_state[chave_gemini]   = None
+                st.session_state[chave_final]    = None
+            else:
+                ext_url  = url_digitada.lower().split("?")[0].split(".")[-1]
+                mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+                mime_url = mime_map.get(ext_url, "image/jpeg")
+
+                st.session_state[chave_url]      = url_digitada
+                st.session_state[chave_original] = imagem_bytes_url
+                with st.spinner("🤖 Processando com Gemini (realismo + sombra)..."):
+                    resultado_gemini_url = _processar_imagem_gemini(imagem_bytes_url, mime_url)
+                st.session_state[chave_gemini] = resultado_gemini_url if resultado_gemini_url else imagem_bytes_url
+                if not resultado_gemini_url:
+                    st.warning("Gemini não retornou imagem. Usando imagem original para redimensionamento.")
+                st.session_state[chave_final] = None
+        except Exception as e:
+            st.error(f"Erro ao baixar URL: {e}")
+            st.session_state[chave_original] = None
+            st.session_state[chave_gemini]   = None
+            st.session_state[chave_final]    = None
+
+    st.markdown("---")
+
     arquivo = st.file_uploader(
-        "Selecione a imagem (JPG ou PNG)",
+        "Ou selecione um arquivo (JPG ou PNG)",
         type=["jpg", "jpeg", "png"],
         key="ftp_upload",
         disabled=st.session_state[chave_enviado],
@@ -1128,6 +1378,7 @@ def dialog_atualizar_ftp(codigo: str):
 
         if st.session_state[chave_original] != imagem_bytes:
             st.session_state[chave_original] = imagem_bytes
+            st.session_state[chave_url]      = ""  # limpa URL ao trocar para upload
             with st.spinner("🤖 Processando com Gemini (realismo + sombra)..."):
                 resultado_gemini = _processar_imagem_gemini(imagem_bytes, mime_type)
             st.session_state[chave_gemini] = resultado_gemini if resultado_gemini else imagem_bytes
@@ -1162,7 +1413,7 @@ def dialog_atualizar_ftp(codigo: str):
             )
         with col_btn:
             st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-            atualizar = st.button("🔄 Aplicar", use_container_width=True)
+            atualizar = st.button("🔄 Aplicar", width='stretch')
 
         # Converte cm → px (sem limite máximo)
         larg_px = int(larg_cm * PX_POR_CM)
@@ -1200,14 +1451,14 @@ def dialog_atualizar_ftp(codigo: str):
 
     if st.session_state[chave_enviado]:
         st.success(f"✅ Imagem já enviada ao FTP. Clique em Fechar para atualizar a página.")
-        if st.button("Fechar", use_container_width=True):
+        if st.button("Fechar", width='stretch'):
             st.session_state[chave_enviado] = False
             st.rerun()
         return
 
     col1, col2 = st.columns(2)
-    enviar   = col1.button("✅ Enviar",   use_container_width=True, disabled=imagem_final is None)
-    cancelar = col2.button("❌ Cancelar", use_container_width=True)
+    enviar   = col1.button("✅ Enviar",   width='stretch', disabled=imagem_final is None)
+    cancelar = col2.button("❌ Cancelar", width='stretch')
 
     if cancelar:
         st.rerun()
@@ -1243,16 +1494,37 @@ def dialog_atualizar_ftp(codigo: str):
 
 
 @st.dialog("➕ Cadastrar Marca", width="large")
-def dialog_cadastrar_marca(nome_marca: str):
+def dialog_cadastrar_marca():
     """
     Dialog para cadastrar uma nova marca com logo melhorada pelo Gemini.
 
     Fluxo:
-        1. Usuário faz upload da logo
-        2. Gemini processa: remove fundo + melhora qualidade
-        3. Exibe comparação original × melhorada
-        4. Botão Salvar grava no banco (tabela Marcas)
+        1. Usuário digita o nome da marca
+        2. Faz upload da logo (ou cola URL)
+        3. Gemini processa: remove fundo + melhora qualidade
+        4. Exibe comparação original × melhorada
+        5. Botão Salvar grava no banco (tabela Marcas)
     """
+    # ── Campo para digitar o nome da marca ──────────────────────────────────
+    _raw_marca = st.text_input(
+        "✏️ Nome da marca (somente letras)",
+        value="",
+        placeholder="Ex: MERCEDES, VOLVO, SCANIA…",
+        key="dlg_nova_marca_nome",
+    )
+
+    # Permitir somente letras e espaços, converter para maiúsculo
+    nome_marca = re.sub(r"[^A-Za-zÀ-ÿ\s]", "", _raw_marca).upper().strip()
+
+    if nome_marca != _raw_marca.strip() and _raw_marca.strip():
+        st.caption(f"🔤 Nome ajustado: **{nome_marca}**")
+
+    if not nome_marca:
+        st.info("Digite o nome da marca para continuar.")
+        if st.button("❌ Cancelar", width='stretch'):
+            st.rerun()
+        return
+
     chave_orig  = f"mrc_orig_{nome_marca}"
     chave_gem   = f"mrc_gem_{nome_marca}"
     chave_salvo = f"mrc_salvo_{nome_marca}"
@@ -1275,12 +1547,12 @@ def dialog_cadastrar_marca(nome_marca: str):
     # ── Tela de confirmação pós-salvamento ─────────────────────────────────
     if st.session_state[chave_salvo]:
         st.success(f"✅ Marca **{nome_marca}** cadastrada com sucesso!")
-        if st.button("Fechar", use_container_width=True):
+        if st.button("Fechar", width='stretch'):
             st.session_state[chave_salvo] = False
             st.rerun()
         return
 
-    st.markdown(f"**Marca:** `{nome_marca}`")
+    st.markdown("---")
     st.info("Cole a URL da imagem **ou** faça upload. O Gemini melhora automaticamente.")
 
     # ── Opção 1: URL da imagem ──────────────────────────────────────────────
@@ -1314,6 +1586,18 @@ def dialog_cadastrar_marca(nome_marca: str):
                 imagem_bytes = resp.content
                 # detectar mime pelo Content-Type ou extensão
                 ct = resp.headers.get("Content-Type", "image/png").split(";")[0].strip()
+
+                # Converter SVG para PNG automaticamente
+                _is_svg = (
+                    "svg" in ct.lower()
+                    or url_logo.strip().lower().endswith(".svg")
+                    or imagem_bytes[:256].lstrip().startswith((b"<svg", b"<?xml"))
+                )
+                if _is_svg:
+                    with st.spinner("🔄 Convertendo SVG para PNG..."):
+                        imagem_bytes = _converter_svg_para_png(imagem_bytes)
+                    ct = "image/png"
+
                 if ct not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
                     ct = "image/png"
                 if st.session_state[chave_orig] != imagem_bytes:
@@ -1332,8 +1616,8 @@ def dialog_cadastrar_marca(nome_marca: str):
 
     # ── Opção 2: Upload de arquivo ──────────────────────────────────────────
     arquivo = st.file_uploader(
-        "📂 Upload da logo (JPG, PNG ou WebP)",
-        type=["jpg", "jpeg", "png", "webp"],
+        "📂 Upload da logo (JPG, PNG, WebP ou SVG)",
+        type=["jpg", "jpeg", "png", "webp", "svg"],
         key=f"mrc_upload_{nome_marca}",
     )
 
@@ -1341,6 +1625,17 @@ def dialog_cadastrar_marca(nome_marca: str):
     if arquivo:
         imagem_bytes = arquivo.getvalue()
         mime_type    = arquivo.type or "image/png"
+
+        # Converter SVG para PNG automaticamente
+        _nome_arq = (arquivo.name or "").lower()
+        if (
+            "svg" in mime_type.lower()
+            or _nome_arq.endswith(".svg")
+            or imagem_bytes[:256].lstrip().startswith((b"<svg", b"<?xml"))
+        ):
+            with st.spinner("🔄 Convertendo SVG para PNG..."):
+                imagem_bytes = _converter_svg_para_png(imagem_bytes)
+            mime_type = "image/png"
 
         if st.session_state[chave_orig] != imagem_bytes:
             st.session_state[chave_orig] = imagem_bytes
@@ -1358,15 +1653,15 @@ def dialog_cadastrar_marca(nome_marca: str):
         col_orig, col_proc = st.columns(2)
         with col_orig:
             st.markdown("**Original**")
-            st.image(st.session_state[chave_orig], use_container_width=True)
+            st.image(st.session_state[chave_orig], width='stretch')
         with col_proc:
             st.markdown("**Melhorada pelo Gemini**")
-            st.image(st.session_state[chave_gem], use_container_width=True)
+            st.image(st.session_state[chave_gem], width='stretch')
 
         st.markdown("---")
         col1, col2 = st.columns(2)
-        salvar   = col1.button("💾 Salvar Marca", use_container_width=True)
-        cancelar = col2.button("❌ Cancelar",     use_container_width=True)
+        salvar   = col1.button("💾 Salvar Marca", width='stretch')
+        cancelar = col2.button("❌ Cancelar",     width='stretch')
 
         if cancelar:
             _limpar_dialog()
@@ -1383,7 +1678,7 @@ def dialog_cadastrar_marca(nome_marca: str):
                 st.session_state[chave_salvo] = True
                 st.rerun()
     else:
-        if st.button("❌ Cancelar", use_container_width=True):
+        if st.button("❌ Cancelar", width='stretch'):
             _limpar_dialog()
             st.rerun()
 
@@ -1524,25 +1819,45 @@ with st.sidebar:
     # ── Campo Marca do Produto ─────────────────────────────────────────────
     st.markdown("### 🏭 Marca do Produto")
 
-    nome_marca_input = st.text_input(
+    # Buscar todas as marcas cadastradas para popular o combobox
+    _marcas_cadastradas = listar_marcas()
+
+    _OPCAO_SELECIONE  = "Selecione a marca..."
+    _OPCAO_CADASTRAR  = "➕ Cadastrar nova marca..."
+    _opcoes_marca = [_OPCAO_SELECIONE] + _marcas_cadastradas + [_OPCAO_CADASTRAR]
+
+    # Se o banco retornou uma marca via código interno, pré-selecionar
+    _idx_marca = 0
+    if _imagem_marca and _imagem_marca.strip():
+        # Tenta encontrar a marca retornada pelo BD na lista
+        _marca_bd_nome = _imagem_marca.strip()
+        for _i, _op in enumerate(_opcoes_marca):
+            if _op.lower() == _marca_bd_nome.lower():
+                _idx_marca = _i
+                break
+
+    marca_selecionada = st.selectbox(
         "🏷️ Marca do Produto",
-        value="",
-        placeholder="Ex: Mercedes-Benz, Volvo, Scania…",
+        options=_opcoes_marca,
+        index=_idx_marca,
         key="campo_marca",
     )
 
     _marca_logo_bytes: bytes | None = None
 
-    if nome_marca_input.strip():
+    if marca_selecionada == _OPCAO_CADASTRAR:
+        # Abre o dialog diretamente ao selecionar a opção
+        dialog_cadastrar_marca()
+
+    elif marca_selecionada and marca_selecionada != _OPCAO_SELECIONE:
+        # Marca existente selecionada — buscar logo do banco
         with st.spinner("Buscando marca no banco..."):
-            _resultado_marca = buscar_marca(nome_marca_input.strip())
+            _resultado_marca = buscar_marca(marca_selecionada)
 
         if _resultado_marca is None:
             st.warning("⚠️ Banco indisponível. Verifique a conexão.")
         elif _resultado_marca == {}:
-            st.warning(f"⚠️ Marca **{nome_marca_input.strip()}** não cadastrada.")
-            if st.button("➕ Cadastrar Marca", use_container_width=True, key="btn_cadastrar_marca"):
-                dialog_cadastrar_marca(nome_marca_input.strip())
+            st.warning(f"⚠️ Marca **{marca_selecionada}** não encontrada no banco.")
         else:
             st.success(f"✅ Marca **{_resultado_marca['nome']}** encontrada!")
             _marca_logo_bytes = _resultado_marca.get("logo_dados")
@@ -1550,7 +1865,6 @@ with st.sidebar:
                 st.image(
                     _marca_logo_bytes,
                     caption="Logo da marca",
-                    use_container_width=False,
                     width=160,
                 )
 
@@ -1595,7 +1909,9 @@ with st.sidebar:
             "⚠️ Nenhuma imagem encontrada no site para este código.\n\n"
             "Faça o carregamento manual abaixo."
         )
-        if st.button("📤 Atualizar FTP", use_container_width=True):
+        if st.button("📤 Atualizar FTP", width='stretch'):
+            import time as _time
+            st.session_state[f"ftp_token_{codigo_interno.strip()}"] = _time.time()
             dialog_atualizar_ftp(codigo_interno.strip())
 
     foto_upload = st.file_uploader(
@@ -1662,7 +1978,7 @@ try:
             data=buf_png,
             file_name=f"promo_{_nome_arquivo(codigo)}.png",
             mime="image/png",
-            use_container_width=True,
+            width='stretch',
             key="dl_png",
         )
 
@@ -1685,9 +2001,26 @@ try:
             data=buf_jpg,
             file_name=f"promo_{_nome_arquivo(codigo)}.jpg",
             mime="image/jpeg",
-            use_container_width=True,
+            width='stretch',
             key="dl_jpg",
         )
+
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+                    border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="color:#f5c87a;font-size:.8rem;font-weight:700;
+                      text-transform:uppercase;letter-spacing:.8px;">
+            Instagram — Retrato
+          </div>
+          <div style="color:#ccc;font-size:.75rem;margin-top:2px;">
+            1080×1350 px &nbsp;·&nbsp; 4:5
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("📸 Instagram", width='stretch', key="btn_instagram"):
+            dialog_instagram(card)
 
         st.markdown("---")
 
@@ -1722,7 +2055,7 @@ try:
             data=_buf_zip,
             file_name=f"promo_{_nome_arquivo(codigo)}_unidades.zip",
             mime="application/zip",
-            use_container_width=True,
+            width='stretch',
             key="dl_zip",
         )
 
