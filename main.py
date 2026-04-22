@@ -1,3 +1,15 @@
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║          GERADOR DE CARD DE PROMOÇÃO — QUINELATO FREIOS                     ║
+║                                                                              ║
+║  Como usar:                                                                  ║
+║    1. Execute: python -m streamlit run main.py                               ║
+║    2. Edite os campos no painel lateral                                      ║
+║    3. (Opcional) Envie a foto do produto                                     ║
+║    4. Baixe o card em PNG ou JPG (300 dpi)                                   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -1450,7 +1462,7 @@ def dialog_atualizar_ftp(codigo: str):
             st.image(imagem_final, width="stretch")
 
     if st.session_state[chave_enviado]:
-        st.success(f"✅ Imagem já enviada ao FTP. Clique em Fechar para atualizar a página.")
+        st.success(f"✅ Imagem enviada ao FTP e salva em `D:\\imagens\\{codigo}_1.jpg`. Clique em Fechar para atualizar a página.")
         if st.button("Fechar", width='stretch'):
             st.session_state[chave_enviado] = False
             st.rerun()
@@ -1487,6 +1499,14 @@ def dialog_atualizar_ftp(codigo: str):
                     # STOR sobrescreve — sem duplicata
                     ftp.storbinary(f"STOR {nome_arquivo}", _io.BytesIO(imagem_final))
                     ftp.quit()
+
+                # Salva cópia local em D:\imagens\
+                pasta_local = r"D:\imagens"
+                os.makedirs(pasta_local, exist_ok=True)
+                caminho_local = os.path.join(pasta_local, nome_arquivo)
+                with open(caminho_local, "wb") as f_local:
+                    f_local.write(imagem_final)
+
                 st.session_state[chave_enviado] = True
                 st.rerun()
             except Exception as e:
