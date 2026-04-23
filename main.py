@@ -1064,11 +1064,29 @@ def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | Non
             contents=[
                 genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
                 genai_types.Part(text=(
-                    "Pure white background, professional studio lighting,"
-                    "Soft and realistic shadow below the product,"
-                    "High level of detail and sharpness, product centered,"
-                    "Photorealistic quality."
-                    "Absolutely no detail of the piece changed."
+                    "Edit the image into a professional commercial studio product photo."
+
+                    "Background:"
+                    "- Replace the background with a pure white seamless studio background."
+                    "- Keep the product centered."
+
+                    "Lighting:"
+                    "- Apply soft, diffused professional studio lighting."
+                    "- Maintain realistic light behavior and natural reflections."
+                    "- Add a soft, realistic contact shadow directly beneath the product."
+
+                    "Preservation rules:"
+                    "- Do not alter the product in any way."
+                    "- Do not change shape, proportions, geometry, angle, perspective, scale, color, texture, material, finish, edges, stitching, prints, labels, logos, surface details, or imperfections."
+                    "- Do not retouch, clean up, reconstruct, redesign, stylize, enhance, or reinterpret the product."
+                    "- Do not generate missing details or improve the object."
+                    "- Preserve every visible detail exactly as in the original image."
+
+                    "Output requirements:"
+                    "- Photorealistic result."
+                    "- High sharpness and fine detail."
+                    "- Clean premium e-commerce / catalog style."
+                    "- The only allowed changes are background removal/replacement, lighting adjustment, and the addition of a realistic shadow."
                 )),
             ],
             config=genai_types.GenerateContentConfig(
