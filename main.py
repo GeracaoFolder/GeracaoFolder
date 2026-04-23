@@ -1064,11 +1064,11 @@ def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | Non
             contents=[
                 genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
                 genai_types.Part(text=(
-                    "Regenerate this product image with the following requirements: "
-                    "pure white background, professional studio lighting, "
-                    "realistic soft shadow below the product, "
-                    "high detail and sharpness, product centered, "
-                    "photorealistic quality."
+                    "Pure white background, professional studio lighting,"
+                    "Soft and realistic shadow below the product,"
+                    "High level of detail and sharpness, product centered,"
+                    "Photorealistic quality."
+                    "Absolutely no detail of the piece changed."
                 )),
             ],
             config=genai_types.GenerateContentConfig(
