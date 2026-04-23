@@ -1060,7 +1060,7 @@ def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | Non
         client = google_genai.Client(api_key=_cfg("GEMINI_API_KEY"))
 
         resposta = client.models.generate_content(
-            model="gemini-2.5-flash-image",
+            model="gemini-3-pro-image",  # ou "gemini-3.1-flash-image"
             contents=[
                 genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
                 genai_types.Part(text=(
