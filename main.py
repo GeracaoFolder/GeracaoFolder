@@ -1322,6 +1322,38 @@ def dialog_instagram(card_img):
 
 
 
+def _verificar_status_ftp(codigo: str) -> str:
+    import ftplib
+    ftp_host = _cfg("FTP_HOST")
+    ftp_port = int(_cfg("FTP_PORT") or 21)
+    ftp_user = _cfg("FTP_USER")
+    ftp_password = _cfg("FTP_PASSWORD")
+    ftp_pasta = _cfg("FTP_PASTA") or "/imagens"
+    nome_arquivo = f"{codigo}_1.jpg"
+
+    if not ftp_host or not ftp_user:
+        return "error"
+    
+    try:
+        ftp = ftplib.FTP()
+        try:
+            ftp.connect(ftp_host, ftp_port, timeout=5)
+            ftp.login(ftp_user, ftp_password)
+            try:
+                ftp.cwd(ftp_pasta)
+                arquivos = ftp.nlst()
+                if nome_arquivo in arquivos:
+                    return "exists"
+                else:
+                    return "not_exists"
+            except ftplib.error_perm:
+                return "not_exists"
+        finally:
+            ftp.close()
+    except Exception:
+        return "error"
+
+
 @st.dialog("📤 Atualizar FTP", width="large")
 def dialog_atualizar_ftp(codigo: str):
     import ftplib, io as _io
@@ -1334,6 +1366,7 @@ def dialog_atualizar_ftp(codigo: str):
     chave_url      = f"ftp_url_{codigo}"
     chave_token    = f"ftp_token_{codigo}"
     chave_token_v  = f"ftp_token_visto_{codigo}"
+    chave_ftp_status = f"ftp_status_{codigo}"
 
     # Detecta nova abertura: token mudou → reseta todo o estado de imagem
     token_atual = st.session_state.get(chave_token, 0)
@@ -1344,6 +1377,8 @@ def dialog_atualizar_ftp(codigo: str):
         st.session_state[chave_gemini]   = None
         st.session_state[chave_final]    = None
         st.session_state[chave_url]      = ""
+        with st.spinner("📡 Verificando status do FTP..."):
+            st.session_state[chave_ftp_status] = _verificar_status_ftp(codigo)
     else:
         for chave, padrao in [
             (chave_enviado,  False),
@@ -1360,8 +1395,14 @@ def dialog_atualizar_ftp(codigo: str):
         nome_arquivo_dl = f"{codigo}_1.jpg"
         caminho_insert  = rf"D:\Imagens\{nome_arquivo_dl}"
 
-        st.success("✅ Imagem enviada ao FTP com sucesso!")
-        st.markdown("**Deseja salvar a imagem no seu computador?**")
+        status_envio = st.session_state.get(f"ftp_enviado_status_{codigo}", "ambos")
+
+        if status_envio == "ambos":
+            st.success("✅ Imagem enviada ao FTP e salva localmente com sucesso!")
+        else:
+            st.warning("⚠️ Imagem salva localmente com sucesso, mas houve erro ao enviar para o FTP.")
+
+        st.markdown("**Deseja baixar a imagem no seu computador?**")
         st.info(f"📁 Caminho: `{caminho_insert}`")
         st.download_button(
             "⬇️ Baixar imagem",
@@ -1534,31 +1575,55 @@ def dialog_atualizar_ftp(codigo: str):
             )
             st.image(imagem_final, width="stretch")
 
+    st.markdown("---")
+    st.markdown("### 🚦 Status do Servidor")
+    status_ftp = st.session_state.get(chave_ftp_status, "error")
+    if status_ftp == "exists":
+        st.warning("🟡 **Atenção:** Já existe uma imagem para este produto no FTP. O envio irá substituí-la.")
+    elif status_ftp == "not_exists":
+        st.success("🟢 **Livre:** Nenhuma imagem no FTP para este produto. Envio seguro.")
+    else:
+        st.error("🔴 **Offline:** Servidor FTP indisponível no momento. A imagem será salva apenas localmente.")
+
     col1, col2 = st.columns(2)
-    enviar   = col1.button("✅ Enviar",   width='stretch', disabled=imagem_final is None)
+    enviar   = col1.button("✅ Salvar Imagem", width='stretch', disabled=imagem_final is None)
     cancelar = col2.button("❌ Cancelar", width='stretch')
 
     if cancelar:
         st.rerun()
 
     if enviar:
+        nome_arquivo = f"{codigo}_1.jpg"
+        
+        # ── 1. Salva cópia local em D:\imagens\ (sempre tenta salvar localmente primeiro) ──
+        pasta_local = r"D:\imagens"
+        salvo_localmente = False
+        if os.name == "nt":
+            try:
+                os.makedirs(pasta_local, exist_ok=True)
+                caminho_local = os.path.join(pasta_local, nome_arquivo)
+                with open(caminho_local, "wb") as f_local:
+                    f_local.write(imagem_final)
+                salvo_localmente = True
+            except Exception as e_local:
+                st.warning(f"⚠️ Falha ao salvar localmente em {pasta_local}: {e_local}")
+
+        # ── 2. Envio FTP ────────────────────────────────────────────────
         ftp_host     = _cfg("FTP_HOST")
         ftp_port     = int(_cfg("FTP_PORT") or 21)
         ftp_user     = _cfg("FTP_USER")
         ftp_password = _cfg("FTP_PASSWORD")
         ftp_pasta    = _cfg("FTP_PASTA") or "/imagens"
-        nome_arquivo = f"{codigo}_1.jpg"
 
+        ftp_ok = False
         if not ftp_host or not ftp_user:
-            st.error("Credenciais FTP não configuradas. Verifique as variáveis FTP_HOST, FTP_USER e FTP_PASSWORD.")
+            st.error("Credenciais FTP não configuradas.")
         else:
-            # ── Envio FTP ────────────────────────────────────────────────
-            ftp_ok = False
             try:
                 with st.spinner("📡 Conectando ao FTP e enviando..."):
                     ftp = ftplib.FTP()
                     try:
-                        ftp.connect(ftp_host, ftp_port, timeout=30)
+                        ftp.connect(ftp_host, ftp_port, timeout=15)
                         ftp.login(ftp_user, ftp_password)
                         try:
                             ftp.cwd(ftp_pasta)
@@ -1576,21 +1641,19 @@ def dialog_atualizar_ftp(codigo: str):
             except Exception as e:
                 st.error(f"Erro FTP: {e}")
 
-            # ── Salva cópia local em D:\imagens\ (somente Windows) ──────
-            if ftp_ok:
-                if os.name == "nt":
-                    pasta_local = r"D:\imagens"
-                    try:
-                        os.makedirs(pasta_local, exist_ok=True)
-                        caminho_local = os.path.join(pasta_local, nome_arquivo)
-                        with open(caminho_local, "wb") as f_local:
-                            f_local.write(imagem_final)
-                    except Exception as e_local:
-                        st.warning(f"⚠️ FTP enviado, mas falhou ao salvar localmente em {pasta_local}: {e_local}")
-
-                st.session_state[chave_enviado] = True
-                st.session_state[chave_final]   = imagem_final
-                st.rerun(scope="fragment")
+        chave_status_envio = f"ftp_enviado_status_{codigo}"
+        if ftp_ok:
+            st.session_state[chave_status_envio] = "ambos"
+            st.session_state[chave_enviado] = True
+            st.session_state[chave_final]   = imagem_final
+            st.rerun(scope="fragment")
+        elif salvo_localmente:
+            st.session_state[chave_status_envio] = "local"
+            st.session_state[chave_enviado] = True
+            st.session_state[chave_final]   = imagem_final
+            st.rerun(scope="fragment")
+        else:
+            st.error("❌ Não foi possível salvar a imagem (nem localmente, nem no FTP).")
 
 
 @st.dialog("➕ Cadastrar Marca", width="large")
