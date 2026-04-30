@@ -1595,18 +1595,26 @@ def dialog_atualizar_ftp(codigo: str):
     if enviar:
         nome_arquivo = f"{codigo}_1.jpg"
         
-        # ── 1. Salva cópia local em D:\imagens\ (sempre tenta salvar localmente primeiro) ──
-        pasta_local = r"D:\imagens"
+        # ── 1. Salva cópia local (sempre tenta salvar localmente primeiro) ──
+        pastas_tentativas = [r"D:\imagens", r"C:\imagens", "./imagens"]
         salvo_localmente = False
-        if os.name == "nt":
+        erro_local = ""
+        caminho_salvo = ""
+        
+        for pasta in pastas_tentativas:
             try:
-                os.makedirs(pasta_local, exist_ok=True)
-                caminho_local = os.path.join(pasta_local, nome_arquivo)
+                os.makedirs(pasta, exist_ok=True)
+                caminho_local = os.path.join(pasta, nome_arquivo)
                 with open(caminho_local, "wb") as f_local:
                     f_local.write(imagem_final)
                 salvo_localmente = True
-            except Exception as e_local:
-                st.warning(f"⚠️ Falha ao salvar localmente em {pasta_local}: {e_local}")
+                caminho_salvo = caminho_local
+                break
+            except Exception as e:
+                erro_local += f"Falhou em {pasta}: {e} | "
+                
+        if not salvo_localmente:
+            st.error(f"⚠️ Erro ao salvar localmente: {erro_local}")
 
         # ── 2. Envio FTP ────────────────────────────────────────────────
         ftp_host     = _cfg("FTP_HOST")
