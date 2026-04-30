@@ -288,29 +288,35 @@ def buscar_imagens_produto(codigo: str) -> list[dict]:
     if ftp_host and ftp_user:
         try:
             _ftp = _ftplib.FTP()
-            _ftp.connect(ftp_host, ftp_port, timeout=20)
-            _ftp.login(ftp_user, ftp_password)
             try:
-                _ftp.cwd(ftp_pasta)
-            except _ftplib.error_perm:
-                pass  # pasta não existe — nenhuma imagem no FTP
-
-            for i in range(1, 6):
-                nome_arq = f"{codigo}_{i}.jpg"
-                buf = io.BytesIO()
+                _ftp.connect(ftp_host, ftp_port, timeout=20)
+                _ftp.login(ftp_user, ftp_password)
                 try:
-                    _ftp.retrbinary(f"RETR {nome_arq}", buf.write)
-                    raw = buf.getvalue()
-                    if len(raw) < 1024:
-                        continue
-                    _img_test = Image.open(io.BytesIO(raw))
-                    _img_test.load()
-                    url = f"{_BASE_URL_IMAGENS}/{nome_arq}"
-                    encontradas.append({"label": f"Imagem {i}", "url": url, "bytes": raw})
-                except Exception:
-                    continue
+                    _ftp.cwd(ftp_pasta)
+                except _ftplib.error_perm:
+                    pass  # pasta não existe — nenhuma imagem no FTP
 
-            _ftp.quit()
+                for i in range(1, 6):
+                    nome_arq = f"{codigo}_{i}.jpg"
+                    buf = io.BytesIO()
+                    try:
+                        _ftp.retrbinary(f"RETR {nome_arq}", buf.write)
+                        raw = buf.getvalue()
+                        if len(raw) < 1024:
+                            continue
+                        _img_test = Image.open(io.BytesIO(raw))
+                        _img_test.load()
+                        url = f"{_BASE_URL_IMAGENS}/{nome_arq}"
+                        encontradas.append({"label": f"Imagem {i}", "url": url, "bytes": raw})
+                    except Exception:
+                        continue
+
+                try:
+                    _ftp.quit()
+                except Exception:
+                    pass
+            finally:
+                _ftp.close()
         except Exception:
             pass  # FTP indisponível — tenta HTTP abaixo
 
@@ -1064,29 +1070,31 @@ def _processar_imagem_gemini(imagem_bytes: bytes, mime_type: str) -> bytes | Non
             contents=[
                 genai_types.Part.from_bytes(data=imagem_bytes, mime_type=mime_type),
                 genai_types.Part(text=(
-                    "Edit the image into a professional commercial studio product photo."
+                     "Transform this image into a professional commercial studio product photo with a PURE WHITE background."
 
-                    "Background:"
-                    "- Replace the background with a pure white seamless studio background."
-                    "- Keep the product centered."
+                    "BACKGROUND (highest priority):"
+                    "- Replace the entire background with pure white (#FFFFFF) — no gradients, no grey tones, no shadows on the background itself."
+                    "- The background must be completely flat, seamless, and uniformly white from edge to edge."
+                    "- Ensure clean, sharp edge separation between the product and the white background."
+                    "- Keep the product centered on the canvas."
 
-                    "Lighting:"
-                    "- Apply soft, diffused professional studio lighting."
-                    "- Maintain realistic light behavior and natural reflections."
-                    "- Add a soft, realistic contact shadow directly beneath the product."
+                    "LIGHTING:"
+                    "- Apply soft, diffused professional studio lighting consistent with a white seamless backdrop."
+                    "- Maintain realistic light behavior and natural reflections on the product surface."
+                    "- Add a soft, subtle contact shadow directly beneath the product only — shadow must fade into white, not grey."
 
-                    "Preservation rules:"
-                    "- Do not alter the product in any way."
-                    "- Do not change shape, proportions, geometry, angle, perspective, scale, color, texture, material, finish, edges, stitching, prints, labels, logos, surface details, or imperfections."
-                    "- Do not retouch, clean up, reconstruct, redesign, stylize, enhance, or reinterpret the product."
-                    "- Do not generate missing details or improve the object."
-                    "- Preserve every visible detail exactly as in the original image."
+                    "STRICT PRESERVATION RULES (do not violate under any circumstance):"
+                    "- Do NOT alter the product in any way whatsoever."
+                    "- Do NOT change: shape, proportions, geometry, angle, perspective, scale, color, texture, material, finish, edges, stitching, prints, labels, logos, surface details, or imperfections."
+                    "- Do NOT retouch, clean up, reconstruct, redesign, stylize, enhance, or reinterpret the product."
+                    "- Do NOT generate missing details, fill in areas, or improve the object's appearance."
+                    "- Preserve every visible detail exactly as captured in the original image."
 
-                    "Output requirements:"
-                    "- Photorealistic result."
-                    "- High sharpness and fine detail."
-                    "- Clean premium e-commerce / catalog style."
-                    "- The only allowed changes are background removal/replacement, lighting adjustment, and the addition of a realistic shadow."
+                    "OUTPUT REQUIREMENTS:"
+                    "- Final background: pure white (#FFFFFF), fully opaque."
+                    "- Photorealistic result with high sharpness and fine detail."
+                    "- Clean, premium e-commerce / catalog style."
+                    "- The ONLY permitted changes are: background replacement (to pure white), lighting adjustment, and addition of a subtle realistic ground shadow."
                 )),
             ],
             config=genai_types.GenerateContentConfig(
@@ -1547,15 +1555,21 @@ def dialog_atualizar_ftp(codigo: str):
             try:
                 with st.spinner("📡 Conectando ao FTP e enviando..."):
                     ftp = ftplib.FTP()
-                    ftp.connect(ftp_host, ftp_port, timeout=30)
-                    ftp.login(ftp_user, ftp_password)
                     try:
-                        ftp.cwd(ftp_pasta)
-                    except ftplib.error_perm:
-                        ftp.mkd(ftp_pasta)
-                        ftp.cwd(ftp_pasta)
-                    ftp.storbinary(f"STOR {nome_arquivo}", _io.BytesIO(imagem_final))
-                    ftp.quit()
+                        ftp.connect(ftp_host, ftp_port, timeout=30)
+                        ftp.login(ftp_user, ftp_password)
+                        try:
+                            ftp.cwd(ftp_pasta)
+                        except ftplib.error_perm:
+                            ftp.mkd(ftp_pasta)
+                            ftp.cwd(ftp_pasta)
+                        ftp.storbinary(f"STOR {nome_arquivo}", _io.BytesIO(imagem_final))
+                        try:
+                            ftp.quit()
+                        except Exception:
+                            pass
+                    finally:
+                        ftp.close()
                 ftp_ok = True
             except Exception as e:
                 st.error(f"Erro FTP: {e}")
