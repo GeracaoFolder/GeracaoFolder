@@ -82,6 +82,7 @@ def _cfg(chave: str) -> str:
 # BANCO DE DADOS — MySQL
 # ──────────────────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=600, show_spinner=False)
 def buscar_produto(codigo_interno: str):
     """
     Busca o produto pelo código interno no MySQL.
@@ -266,6 +267,7 @@ _HEADERS_NAVEGADOR = {
 }
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def buscar_imagens_produto(codigo: str) -> list[dict]:
     """
     Tenta baixar as variantes _1 a _5 da imagem do produto.
