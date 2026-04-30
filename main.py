@@ -1626,19 +1626,37 @@ def dialog_atualizar_ftp(codigo: str):
         ftp_ok = False
         if not ftp_host or not ftp_user:
             st.error("Credenciais FTP não configuradas.")
+        elif not imagem_final:
+            st.error("Imagem inválida — nenhum dado para enviar.")
         else:
+            def _cwd_ou_mkd(ftp_conn, pasta):
+                """Entra na pasta; cria apenas se o erro for 'não existe' (550)."""
+                try:
+                    ftp_conn.cwd(pasta)
+                except ftplib.error_perm as err:
+                    if str(err).startswith("550"):
+                        ftp_conn.mkd(pasta)
+                        ftp_conn.cwd(pasta)
+                    else:
+                        raise
+
+            def _stor(ftp_conn, nome, dados):
+                """Tenta PASV; se falhar na transferência, cai para PORT."""
+                ftp_conn.set_pasv(True)
+                try:
+                    ftp_conn.storbinary(f"STOR {nome}", _io.BytesIO(dados))
+                except (ftplib.error_temp, OSError):
+                    ftp_conn.set_pasv(False)
+                    ftp_conn.storbinary(f"STOR {nome}", _io.BytesIO(dados))
+
             try:
                 with st.spinner("📡 Conectando ao FTP e enviando..."):
                     ftp = ftplib.FTP()
                     try:
                         ftp.connect(ftp_host, ftp_port, timeout=15)
                         ftp.login(ftp_user, ftp_password)
-                        try:
-                            ftp.cwd(ftp_pasta)
-                        except ftplib.error_perm:
-                            ftp.mkd(ftp_pasta)
-                            ftp.cwd(ftp_pasta)
-                        ftp.storbinary(f"STOR {nome_arquivo}", _io.BytesIO(imagem_final))
+                        _cwd_ou_mkd(ftp, ftp_pasta)
+                        _stor(ftp, nome_arquivo, imagem_final)
                         try:
                             ftp.quit()
                         except Exception:
@@ -1646,8 +1664,14 @@ def dialog_atualizar_ftp(codigo: str):
                     finally:
                         ftp.close()
                 ftp_ok = True
+            except ftplib.error_perm as e:
+                st.error(f"FTP — permissão negada: {e}")
+            except ftplib.error_temp as e:
+                st.error(f"FTP — erro temporário no servidor: {e}")
+            except OSError as e:
+                st.error(f"FTP — falha de conexão ({type(e).__name__}): {e}")
             except Exception as e:
-                st.error(f"Erro FTP: {e}")
+                st.error(f"FTP — erro inesperado ({type(e).__name__}): {e}")
 
         chave_status_envio = f"ftp_enviado_status_{codigo}"
         if ftp_ok:
@@ -1982,6 +2006,7 @@ with st.sidebar:
 
         with st.spinner("Buscando imagens..."):
             _imagens = buscar_imagens_produto(codigo_interno.strip())
+
     codigo   = campo_obrigatorio("🔢 Numero do Fabricante", value=_cod_pre)
     nome     = campo_obrigatorio("📦 Descrição do produto", value=_nome_pre)
     veiculos = campo_obrigatorio("🚛 Veículos compatíveis", value="")
